@@ -1,0 +1,10 @@
+==================================================
+             EVALUATION REPORT (TEST MSE)
+==================================================
+Metric                     | Baseline    | Swarm
+---------------------------|-------------|------------
+Mean Individual Loss       | 9.7221      | 7.7645
+Best Individual Loss       | 7.9613      | 7.5644
+Ensemble Loss (Avg Output) | 7.2858      | 7.5034
+Center of Mass Loss        | 358.5067      | 15.0791
+Cohesion (Avg L2 Spread)   | 131.8645      | 7.7200
