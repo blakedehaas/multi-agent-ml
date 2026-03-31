@@ -1,40 +1,31 @@
 """
 visualization/loss_landscape.py
 
-Filter-normalized 2D loss landscape visualization (Li et al. 2018).
+Two complementary loss landscape visualizations.
 
-Core idea
----------
-Pick two random directions δ, η in parameter space and evaluate the loss
-at a grid of points around the trained weights θ*:
+1. Single-agent landscape (Li et al. 2018)
+-------------------------------------------
+Filter-normalized random directions around a single agent's final weights.
+Rigorous and comparable across conditions — the axes mean the same thing
+for every model so basin shapes can be directly compared.
 
-    L(a, b) = loss(θ* + a*δ_hat + b*η_hat)
+    grid = compute_loss_grid(agent, criterion, loader, grid_size=51)
+    fig  = plot_loss_landscape(grid, title='Loss Landscape — baseline')
 
-The key is filter normalization — each direction is scaled so that the
-perturbation magnitude is proportional to the filter norms of the model.
-This makes landscapes from different models and checkpoints comparable on
-the same axes.
+2. Multi-agent PCA plot
+------------------------
+PCA directions derived from all agents' final positions. The loss surface
+is computed using PC1/PC2 as axes, centered on the mean agent position.
+Agent dots and per-agent training trails are overlaid. Visually informative
+for showing swarm diversity and convergence behavior.
 
-Without normalization, a model with large weights would appear to have a
-wide flat basin simply because the random direction has small components
-relative to its weights. Filter normalization removes this scale artifact.
+    fig = plot_agent_pca(
+        agents, criterion, probe_loader, param_snapshots,
+        title='Agent PCA — full_swarm',
+    )
 
 Reference: Li et al. 2018 — "Visualizing the Loss Landscape of Neural Nets"
            https://arxiv.org/abs/1712.09913
-
-Usage
------
-    # After training agent to θ*:
-    grid = compute_loss_grid(
-        agent     = trained_agent,
-        criterion = nn.CrossEntropyLoss(),
-        loader    = probe_loader,
-        grid_size = 21,
-        alpha_range = (-1.0, 1.0),
-    )
-
-    fig = plot_loss_landscape(grid, agents=[agent_a, agent_b])
-    wandb.log({'landscape': wandb.Image(fig)})
 """
 
 import copy
@@ -43,7 +34,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import cm
 from torch import Tensor
 from torch.utils.data import DataLoader
 
@@ -90,7 +80,6 @@ def filter_normalize_direction(
 
         if param.dim() == 4:
             # Conv filter: shape (out_ch, in_ch, kH, kW)
-            # Normalize each output filter independently
             for f in range(param.shape[0]):
                 filter_dir    = chunk[f]
                 filter_weight = param[f]
@@ -99,7 +88,7 @@ def filter_normalize_direction(
                 if dir_norm > 1e-10:
                     chunk[f] = filter_dir / dir_norm * weight_norm
         else:
-            # Linear / bias / BN: normalize the whole tensor as one unit
+            # Linear / bias / BN: normalize as one unit
             dir_norm    = chunk.norm()
             weight_norm = param.norm()
             if dir_norm > 1e-10:
@@ -124,68 +113,73 @@ def compute_loss_grid(
     alpha_range: tuple[float, float] = (-1.0, 1.0),
     beta_range:  tuple[float, float] | None = None,
     seed: int = 42,
+    center: Tensor | None = None,
+    directions: tuple[Tensor, Tensor] | None = None,
 ) -> dict:
     """
-    Evaluate loss on a 2D grid of perturbations around the agent's weights.
+    Evaluate loss on a 2D grid of perturbations around a center point.
 
-    The two directions are sampled randomly and then filter-normalized so
-    the grid axes have physically meaningful scale.
+    By default the center is the agent's final weights and the directions
+    are random filter-normalized vectors (Li et al. 2018). Pass `center`
+    and `directions` to override both — used by plot_agent_pca to build
+    a grid around the mean agent position along PCA axes.
 
     Parameters
     ----------
     agent : AgentTrainer
-        Trained agent. Weights are NOT modified — a temporary copy is used
-        for each grid point evaluation.
+        Used for the model architecture and device. Weights are not modified.
     criterion : nn.Module
-        Loss function (e.g. nn.CrossEntropyLoss()).
     loader : DataLoader
-        Probe loader — use get_probe_loader() for reproducibility.
-        Smaller loaders (512 samples) make grid computation fast.
+        Probe loader — smaller is faster (512 samples is enough).
     grid_size : int
-        Number of points along each axis. grid_size=21 → 21×21 = 441
-        evaluations. Increase to 51 on Colab for smoother plots.
+        Points per axis. 51 for final runs, 11-15 for debugging.
     alpha_range : tuple (min, max)
-        Range of perturbation magnitude along first direction.
+        Range along first direction.
     beta_range : tuple or None
-        Range along second direction. Defaults to same as alpha_range.
+        Range along second direction. Defaults to alpha_range.
     seed : int
-        RNG seed for direction sampling. Fix this to compare landscapes
-        from different agents on the same axes.
+        RNG seed for random direction sampling. Fix to compare conditions.
+    center : Tensor (D,) or None
+        Center point for the grid. Defaults to agent.param_vector().
+    directions : (Tensor, Tensor) or None
+        (delta, eta) directions. When provided, filter normalization and
+        random sampling are skipped entirely.
 
     Returns
     -------
     dict with keys:
-        'loss_grid'   : ndarray shape (grid_size, grid_size)
-        'alpha_vals'  : ndarray shape (grid_size,)
-        'beta_vals'   : ndarray shape (grid_size,)
-        'theta_star'  : Tensor (D,) — the center point (agent's weights)
-        'delta'       : Tensor (D,) — filter-normalized direction 1
-        'eta'         : Tensor (D,) — filter-normalized direction 2
-        'center_loss' : float — loss at θ* (a=0, b=0)
+        'loss_grid'   : ndarray (grid_size, grid_size)
+        'alpha_vals'  : ndarray (grid_size,)
+        'beta_vals'   : ndarray (grid_size,)
+        'theta_star'  : Tensor (D,) — center point
+        'delta'       : Tensor (D,) — direction 1
+        'eta'         : Tensor (D,) — direction 2
+        'center_loss' : float
     """
     if not isinstance(agent.model, TinyNet):
         raise TypeError("compute_loss_grid requires a TinyNet agent.")
 
     beta_range = beta_range or alpha_range
 
-    # ── Sample and filter-normalize two random directions ──────────────
-    torch.manual_seed(seed)
-    theta_star = agent.param_vector()                            # (D,) on agent.device
-    D = theta_star.shape[0]
+    # ── Center and directions ─────────────────────────────────────────────
+    if center is not None:
+        theta_star = center.to(agent.device)
+    else:
+        theta_star = agent.param_vector()
 
-    delta_raw = torch.randn(D, device=agent.device)
-    eta_raw   = torch.randn(D, device=agent.device)
+    if directions is not None:
+        delta, eta = directions[0].to(agent.device), directions[1].to(agent.device)
+    else:
+        D = theta_star.shape[0]
+        torch.manual_seed(seed)
+        delta = filter_normalize_direction(torch.randn(D, device=agent.device), agent.model)
+        eta   = filter_normalize_direction(torch.randn(D, device=agent.device), agent.model)
 
-    delta = filter_normalize_direction(delta_raw, agent.model)   # (D,)
-    eta   = filter_normalize_direction(eta_raw,   agent.model)   # (D,)
-
-    # ── Build grid axes ──────────────────────────────────────────────────
+    # ── Build grid ────────────────────────────────────────────────────────
     alpha_vals = np.linspace(alpha_range[0], alpha_range[1], grid_size)
     beta_vals  = np.linspace(beta_range[0],  beta_range[1],  grid_size)
     loss_grid  = np.zeros((grid_size, grid_size))
 
-    # ── Evaluate loss at each grid point ─────────────────────────────────
-    # Work on a temporary copy of the model to avoid modifying the agent
     tmp_model = copy.deepcopy(agent.model).to(agent.device)
     tmp_model.eval()
 
@@ -193,26 +187,20 @@ def compute_loss_grid(
 
     for i, a in enumerate(alpha_vals):
         for j, b in enumerate(beta_vals):
-            # Perturb: θ* + a*δ + b*η
             perturbed = theta_star + a * delta + b * eta
-            vector_to_parameters(perturbed.to(agent.device), tmp_model.parameters())
+            vector_to_parameters(perturbed, tmp_model.parameters())
 
-            # Evaluate loss over the probe loader
-            total_loss = 0.0
-            n_batches  = 0
+            total_loss, n_batches = 0.0, 0
             for X, y in loader:
                 X, y = X.to(agent.device), y.to(agent.device)
-                logits = tmp_model(X)
-                total_loss += criterion(logits, y).item()
+                total_loss += criterion(tmp_model(X), y).item()
                 n_batches  += 1
 
             loss_grid[i, j] = total_loss / max(n_batches, 1)
 
     # Restore original weights
     from torch.nn.utils import vector_to_parameters as v2p
-    v2p(theta_star.to(agent.device), agent.model.parameters())
-
-    center_loss = loss_grid[grid_size // 2, grid_size // 2]
+    v2p(agent.param_vector(), agent.model.parameters())
 
     return {
         'loss_grid':   loss_grid,
@@ -221,139 +209,308 @@ def compute_loss_grid(
         'theta_star':  theta_star,
         'delta':       delta,
         'eta':         eta,
-        'center_loss': center_loss,
+        'center_loss': loss_grid[grid_size // 2, grid_size // 2],
     }
 
 
 # ---------------------------------------------------------------------------
-# Plotting
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _draw_surface_and_contour(
+    fig: plt.Figure,
+    ax3d,
+    ax2d,
+    A: np.ndarray,
+    B: np.ndarray,
+    Z: np.ndarray,
+    Z_label: str,
+    elev: float,
+    azim: float,
+    xlabel: str,
+    ylabel: str,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> object:
+    """Draw 3D surface + 2D contour onto pre-created axes. Returns contourf."""
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    # When a shared scale is provided, pin the levels explicitly so that
+    # the colorbar ticks span the full shared range on every subplot —
+    # not just the data range of this particular condition.
+    if vmin is not None and vmax is not None:
+        levels_arg = np.linspace(vmin, vmax, 31)
+    else:
+        levels_arg = 30
+
+    surf = ax3d.plot_surface(A, B, Z, cmap='coolwarm', alpha=0.88,
+                             linewidth=0, antialiased=True,
+                             vmin=vmin, vmax=vmax)
+    ax3d.set_xlabel(xlabel, fontsize=9, labelpad=8)
+    ax3d.set_ylabel(ylabel, fontsize=9, labelpad=8)
+    ax3d.set_zlabel(Z_label, fontsize=9, labelpad=8)
+    ax3d.view_init(elev=elev, azim=azim)
+
+    cf = ax2d.contourf(A, B, Z, levels=levels_arg, cmap='coolwarm', vmin=vmin, vmax=vmax)
+    ax2d.contour(A, B, Z, levels=levels_arg, colors='k', linewidths=0.3, alpha=0.4)
+    fig.colorbar(cf, ax=ax2d, label=Z_label, shrink=0.85)
+    ax2d.set_xlabel(xlabel, fontsize=9)
+    ax2d.set_ylabel(ylabel, fontsize=9)
+
+    return cf
+
+
+def _draw_trail(ax, trail_a: np.ndarray, trail_b: np.ndarray, color):
+    """Draw a single colored trail with arrows on a 2D axes."""
+    n = len(trail_a)
+    if n < 2:
+        return
+    for i in range(n - 1):
+        ax.plot([trail_a[i], trail_a[i + 1]], [trail_b[i], trail_b[i + 1]],
+                color=color, linewidth=1.5, zorder=6, alpha=0.8)
+        ax.annotate(
+            '', xy=(trail_a[i + 1], trail_b[i + 1]),
+            xytext=(trail_a[i], trail_b[i]),
+            arrowprops=dict(arrowstyle='->', color=color, lw=1.5),
+            zorder=7,
+        )
+    ax.scatter(trail_a, trail_b, color=color, s=14, zorder=8,
+               edgecolors='none', alpha=0.7)
+
+
+# ---------------------------------------------------------------------------
+# Plot 1 — single-agent loss landscape (random filter-normalized directions)
 # ---------------------------------------------------------------------------
 
 def plot_loss_landscape(
     grid: dict,
-    agents: list[AgentTrainer] | None = None,
-    agent_labels: list[str] | None = None,
     title: str = 'Loss Landscape',
     log_scale: bool = True,
     figsize: tuple[float, float] = (16, 6),
     elev: float = 30.0,
     azim: float = -60.0,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> plt.Figure:
     """
-    Plot the loss landscape as a side-by-side 3D surface and 2D contour map.
+    Plot the loss landscape of a single agent as a 3D surface + 2D contour.
 
-    The 3D surface gives an intuitive view of basin geometry. The 2D contour
-    makes agent positions easier to read precisely. Both share the same data
-    and color scale.
-
-    Agent positions are projected onto the (δ, η) plane. On the 3D plot they
-    are drawn as vertical stems so they are visible regardless of viewing angle.
-    On the 2D plot they are drawn as labeled scatter points.
+    Uses the random filter-normalized directions from compute_loss_grid.
+    Rigorous and comparable across conditions — do not overlay other agents
+    here since their projections onto random axes are meaningless.
 
     Parameters
     ----------
     grid : dict
         Output of compute_loss_grid().
-    agents : list[AgentTrainer] or None
-        Agents to overlay. Agent 0 is the center (θ*).
-    agent_labels : list[str] or None
+    title : str
     log_scale : bool
         Plot log(loss) — makes basin edges more visible.
     figsize : tuple
     elev : float
-        Elevation angle of the 3D view in degrees.
     azim : float
-        Azimuth angle of the 3D view in degrees.
 
     Returns
     -------
     matplotlib Figure
     """
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3D projection
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
     loss_grid  = grid['loss_grid']
     alpha_vals = grid['alpha_vals']
     beta_vals  = grid['beta_vals']
-    theta_star = grid['theta_star']
-    delta      = grid['delta']
-    eta        = grid['eta']
 
-    A, B = np.meshgrid(alpha_vals, beta_vals, indexing='ij')
-    Z    = np.log(loss_grid + 1e-8) if log_scale else loss_grid
+    A, B    = np.meshgrid(alpha_vals, beta_vals, indexing='ij')
+    Z       = np.log(loss_grid + 1e-8) if log_scale else loss_grid
     Z_label = 'log(loss)' if log_scale else 'loss'
-    z_floor = Z.min() - 0.05 * (Z.max() - Z.min())
-
-    # ── Project agents onto (δ, η) plane ─────────────────────────────────
-    agent_projections = []
-    if agents:
-        labels = agent_labels or [f'A{i}' for i in range(len(agents))]
-        colors = plt.cm.tab10(np.linspace(0, 1, len(agents)))
-        for i, agent in enumerate(agents):
-            if i == 0:
-                continue
-            diff   = agent.param_vector().to(theta_star.device) - theta_star
-            proj_a = (torch.dot(diff, delta) / (delta.norm() ** 2 + 1e-10)).item()
-            proj_b = (torch.dot(diff, eta)   / (eta.norm()   ** 2 + 1e-10)).item()
-            agent_projections.append((proj_a, proj_b, labels[i], colors[i]))
 
     fig = plt.figure(figsize=figsize)
     fig.suptitle(title, fontsize=13, y=1.01)
 
-    # ── Left: 3D surface ─────────────────────────────────────────────────
     ax3d = fig.add_subplot(121, projection='3d')
+    ax2d = fig.add_subplot(122)
 
-    surf = ax3d.plot_surface(
-        A, B, Z,
-        cmap='coolwarm',
-        alpha=0.88,
-        linewidth=0,
-        antialiased=True,
+    _draw_surface_and_contour(fig, ax3d, ax2d, A, B, Z, Z_label, elev, azim,
+                               'α (direction δ)', 'β (direction η)',
+                               vmin=vmin, vmax=vmax)
+
+    ax3d.set_title('3D Surface', fontsize=11)
+    ax2d.set_title('2D Contour', fontsize=11)
+
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Plot 2 — multi-agent PCA plot
+# ---------------------------------------------------------------------------
+
+def plot_agent_pca(
+    agents: list[AgentTrainer],
+    criterion: nn.Module,
+    loader: DataLoader,
+    param_snapshots: list[list],
+    agent_labels: list[str] | None = None,
+    title: str = 'Agent PCA',
+    log_scale: bool = True,
+    grid_size: int = 21,
+    padding: float = 0.3,
+    figsize: tuple[float, float] = (16, 6),
+    elev: float = 30.0,
+    azim: float = -60.0,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> plt.Figure:
+    """
+    Plot all agents' final positions and training trails on a loss surface
+    computed along the top 2 PCA directions of the agent ensemble.
+
+    Because the axes are derived from where the agents actually ended up,
+    agent dots are always spread across the plot and trails are always
+    visible — unlike the random-direction landscape where both collapse
+    to a single point.
+
+    Parameters
+    ----------
+    agents : list[AgentTrainer]
+        All trained agents in the ensemble.
+    criterion : nn.Module
+    loader : DataLoader
+        Probe loader for loss evaluation.
+    param_snapshots : list of list of Tensor
+        param_snapshots[epoch][agent_idx] = param vector (D,) on CPU.
+        Collected during training via epoch_callback.
+    agent_labels : list[str] or None
+    title : str
+    log_scale : bool
+    grid_size : int
+        Points per axis for the loss grid. 21 is fast; use 51 for final runs.
+    padding : float
+        Fraction of the agent spread to add around the grid boundary so
+        no agent dot sits on the edge.
+    figsize : tuple
+    elev : float
+    azim : float
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    device = agents[0].device
+    labels = agent_labels or [f'A{i}' for i in range(len(agents))]
+    colors = plt.cm.tab10(np.linspace(0, 1, len(agents)))
+
+    # ── 1. Stack final param vectors, compute mean and PCA ────────────────
+    final_vecs = torch.stack(
+        [a.param_vector().cpu() for a in agents]
+    )                                               # (n_agents, D)
+    mean_vec   = final_vecs.mean(dim=0)             # (D,)
+    deviations = final_vecs - mean_vec              # (n_agents, D)
+
+    # SVD of deviations → top 2 right singular vectors are PC1, PC2
+    # deviations shape: (n_agents, D) — U (n×n), S (n,), Vt (n×D)
+    _, S, Vt = torch.linalg.svd(deviations, full_matrices=False)
+    pc1 = Vt[0]   # (D,)
+    pc2 = Vt[1]   # (D,)
+
+    # Variance explained by PC1+PC2
+    var_total    = (S ** 2).sum().item()
+    var_explained = ((S[0] ** 2 + S[1] ** 2) / var_total).item() if var_total > 0 else 1.0
+
+    # ── 2. Project final positions onto (PC1, PC2) ────────────────────────
+    final_a = (deviations @ pc1).numpy()   # (n_agents,)
+    final_b = (deviations @ pc2).numpy()
+
+    # ── 3. Auto-compute grid range to contain all agents + padding ────────
+    spread_a = max(abs(final_a.max()), abs(final_a.min()))
+    spread_b = max(abs(final_b.max()), abs(final_b.min()))
+    spread   = max(spread_a, spread_b, 1e-3)   # guard against degenerate case
+    r        = float(spread * (1.0 + padding))
+    alpha_range = (-r, r)
+
+    # ── 4. Compute loss grid using PC1/PC2 centered on mean ───────────────
+    grid = compute_loss_grid(
+        agent       = agents[0],
+        criterion   = criterion,
+        loader      = loader,
+        grid_size   = grid_size,
+        alpha_range = alpha_range,
+        center      = mean_vec,
+        directions  = (pc1, pc2),
     )
 
-    # Center θ* — use plot3D for clean circular marker
-    z_center = Z[len(alpha_vals) // 2, len(beta_vals) // 2]
-    ax3d.plot3D([0], [0], [z_center], 'o',
-                color='white', markersize=8,
-                markeredgecolor='black', markeredgewidth=1.5,
-                label='θ* (center)', zorder=5)
+    loss_grid  = grid['loss_grid']
+    alpha_vals = grid['alpha_vals']
+    beta_vals  = grid['beta_vals']
 
-    # Agents as vertical stems
-    for proj_a, proj_b, label, color in agent_projections:
-        ax3d.plot([proj_a, proj_a], [proj_b, proj_b],
-                  [z_floor, z_floor + 0.03],
-                  color=color, linewidth=2, zorder=6)
-        ax3d.plot3D([proj_a], [proj_b], [z_floor + 0.03], 'o',
+    A, B    = np.meshgrid(alpha_vals, beta_vals, indexing='ij')
+    Z       = np.log(loss_grid + 1e-8) if log_scale else loss_grid
+    Z_label = 'log(loss)' if log_scale else 'loss'
+
+    # ── 5. Project trajectories onto (PC1, PC2) ───────────────────────────
+    # trails[i] = (trail_a, trail_b) arrays for agent i
+    trails = []
+    for i in range(len(agents)):
+        snaps = torch.stack(
+            [param_snapshots[epoch][i] for epoch in range(len(param_snapshots))]
+        )                                          # (n_epochs, D)
+        dev_snaps = snaps - mean_vec.unsqueeze(0)
+        t_a = (dev_snaps @ pc1).numpy()
+        t_b = (dev_snaps @ pc2).numpy()
+        trails.append((t_a, t_b))
+
+    # ── 6. Build figure ───────────────────────────────────────────────────
+    fig = plt.figure(figsize=figsize)
+    fig.suptitle(
+        f'{title}\nPC1+PC2 variance explained: {var_explained:.1%}',
+        fontsize=13, y=1.01,
+    )
+
+    ax3d = fig.add_subplot(121, projection='3d')
+    ax2d = fig.add_subplot(122)
+
+    _draw_surface_and_contour(fig, ax3d, ax2d, A, B, Z, Z_label, elev, azim,
+                               'PC1', 'PC2', vmin=vmin, vmax=vmax)
+
+    # Interpolator for getting surface z at any (a, b)
+    from scipy.interpolate import RegularGridInterpolator
+    interp = RegularGridInterpolator(
+        (alpha_vals, beta_vals), Z, method='linear', bounds_error=False, fill_value=None
+    )
+
+    # Mean position marker
+    ax3d.plot3D([0], [0], [float(interp([[0, 0]]))], 'o',
+                color='white', markersize=7,
+                markeredgecolor='black', markeredgewidth=1.2,
+                label='ensemble mean', zorder=5)
+    ax2d.plot(0, 0, 'o', color='white', markersize=9,
+              markeredgecolor='black', markeredgewidth=1.2,
+              label='ensemble mean', zorder=5)
+
+    # Agent final positions + trails
+    for i, (label, color) in enumerate(zip(labels, colors)):
+        a_i, b_i = float(final_a[i]), float(final_b[i])
+
+        # 3D dot on the surface
+        z_i = float(interp([[a_i, b_i]]))
+        ax3d.plot3D([a_i], [b_i], [z_i], 'o',
                     color=color, markersize=7,
                     markeredgecolor='black', markeredgewidth=0.8,
                     label=label, zorder=7)
 
-    ax3d.set_xlabel('α (direction δ)', fontsize=9, labelpad=8)
-    ax3d.set_ylabel('β (direction η)', fontsize=9, labelpad=8)
-    ax3d.set_zlabel(Z_label, fontsize=9, labelpad=8)
+        # 2D trail
+        _draw_trail(ax2d, trails[i][0], trails[i][1], color)
+
+        # 2D final dot (on top of trail)
+        ax2d.plot(a_i, b_i, 'o', color=color, markersize=8,
+                  markeredgecolor='black', markeredgewidth=0.8,
+                  label=label, zorder=9)
+
     ax3d.set_title('3D Surface', fontsize=11)
-    ax3d.view_init(elev=elev, azim=azim)
     ax3d.legend(fontsize=8, loc='upper left')
 
-    # ── Right: 2D contour ────────────────────────────────────────────────
-    ax2d = fig.add_subplot(122)
-
-    contourf = ax2d.contourf(A, B, Z, levels=30, cmap='coolwarm')
-    ax2d.contour(A, B, Z, levels=30, colors='k', linewidths=0.3, alpha=0.4)
-    fig.colorbar(contourf, ax=ax2d, label=Z_label, shrink=0.85)
-
-    # Center θ*
-    ax2d.plot(0, 0, 'o', color='white', markersize=10,
-              markeredgecolor='black', markeredgewidth=1.5,
-              label='θ* (center)', zorder=5)
-
-    # Agents
-    for proj_a, proj_b, label, color in agent_projections:
-        ax2d.plot(proj_a, proj_b, 'o', color=color, markersize=8,
-                  markeredgecolor='black', markeredgewidth=0.8,
-                  label=label, zorder=5)
-
-    ax2d.set_xlabel('α (direction δ)', fontsize=9)
-    ax2d.set_ylabel('β (direction η)', fontsize=9)
     ax2d.set_title('2D Contour', fontsize=11)
     ax2d.legend(fontsize=8, loc='upper left')
 

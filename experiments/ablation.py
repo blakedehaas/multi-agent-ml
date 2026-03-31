@@ -36,12 +36,18 @@ run_ablation() returns a dict mapping condition label → experiment results dic
 Use compare_conditions() to print a summary table.
 """
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+import wandb
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from swarm.trainer import SwarmConfig
 from experiments.run_experiment import ExperimentConfig, run_experiment
+from visualization.loss_landscape import compute_loss_grid, plot_loss_landscape, plot_agent_pca
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +87,9 @@ class AblationConfig:
     weight_decay:     float         = 1e-4
     warm_start_steps: int           = 0
     cka_interval:     int           = 5
-    landscape_at_end: bool          = False
+    landscape_at_end:        bool                = False
+    landscape_grid_size:     int                 = 51
+    landscape_alpha_range:   tuple[float, float] = (-2.0, 2.0)
     checkpoint_dir:   Path          = Path('experiments/checkpoints')
     wandb_project:    str           = 'swarm-optimization'
     wandb_mode:       str           = 'offline'
@@ -178,7 +186,7 @@ def run_ablation(cfg: AblationConfig) -> dict[str, dict]:
             weight_decay     = cfg.weight_decay,
             warm_start_steps = cfg.warm_start_steps,
             cka_interval     = cfg.cka_interval,
-            landscape_at_end = cfg.landscape_at_end,
+            landscape_at_end = False,   # handled centrally below with shared scale
             checkpoint_dir   = cfg.checkpoint_dir,
             wandb_project    = cfg.wandb_project,
             wandb_mode       = cfg.wandb_mode,
@@ -187,11 +195,116 @@ def run_ablation(cfg: AblationConfig) -> dict[str, dict]:
         results = run_experiment(exp_cfg)
         all_results[label] = results
 
+    # ── Landscape plots with shared color scale ───────────────────────────
+    if cfg.landscape_at_end:
+        cfg.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        print(f'\n{"─"*60}')
+        print('Computing loss landscapes (shared color scale)...')
+
+        # Phase 1 — compute all grids
+        landscape_grids: dict[str, dict] = {}
+        pca_grids:       dict[str, dict] = {}
+
+        for label, res in all_results.items():
+            agents          = res['agents']
+            param_snapshots = res['param_snapshots']
+            criterion       = res['criterion']
+            probe_loader    = res['probe_loader']
+
+            print(f'  Grid: {label}')
+            landscape_grids[label] = compute_loss_grid(
+                agent       = agents[0],
+                criterion   = criterion,
+                loader      = probe_loader,
+                grid_size   = cfg.landscape_grid_size,
+                alpha_range = cfg.landscape_alpha_range,
+            )
+            pca_grids[label] = compute_loss_grid(
+                agent       = agents[0],
+                criterion   = criterion,
+                loader      = probe_loader,
+                grid_size   = cfg.landscape_grid_size,
+                **_pca_grid_kwargs(agents, cfg.landscape_grid_size),
+            )
+
+        # Phase 2 — find global vmin/vmax for each plot type
+        def _z(grid, log_scale=True):
+            Z = grid['loss_grid']
+            return np.log(Z + 1e-8) if log_scale else Z
+
+        ls_vals  = np.concatenate([_z(g).ravel() for g in landscape_grids.values()])
+        pca_vals = np.concatenate([_z(g).ravel() for g in pca_grids.values()])
+        ls_vmin,  ls_vmax  = float(ls_vals.min()),  float(ls_vals.max())
+        pca_vmin, pca_vmax = float(pca_vals.min()), float(pca_vals.max())
+
+        # Phase 3 — plot all with shared scale
+        for label, res in all_results.items():
+            agents          = res['agents']
+            param_snapshots = res['param_snapshots']
+            run_cfg         = res['config']
+
+            wandb.init(
+                project = cfg.wandb_project,
+                name    = f'{label}_landscape',
+                mode    = cfg.wandb_mode,
+                reinit  = True,
+            )
+
+            fig = plot_loss_landscape(
+                landscape_grids[label],
+                title  = f'Loss Landscape — {label}',
+                vmin   = ls_vmin,
+                vmax   = ls_vmax,
+            )
+            wandb.log({'final/loss_landscape': wandb.Image(fig)})
+            path = cfg.checkpoint_dir / f'{label}_landscape.png'
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f'  Landscape saved → {path}')
+
+            fig = plot_agent_pca(
+                agents          = agents,
+                criterion       = res['criterion'],
+                loader          = res['probe_loader'],
+                param_snapshots = param_snapshots,
+                agent_labels    = [f'A{i}' for i in range(cfg.n_agents)],
+                grid_size       = cfg.landscape_grid_size,
+                title           = f'Agent PCA — {label}',
+                vmin            = pca_vmin,
+                vmax            = pca_vmax,
+            )
+            wandb.log({'final/agent_pca': wandb.Image(fig)})
+            path = cfg.checkpoint_dir / f'{label}_pca.png'
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f'  PCA saved → {path}')
+
+            wandb.finish()
+
     print(f'\n{"="*60}')
     print('Ablation complete.')
     compare_conditions(all_results)
 
     return all_results
+
+
+def _pca_grid_kwargs(agents, grid_size: int) -> dict:
+    """Compute PCA center and directions from agent final positions."""
+    import torch
+    final_vecs = torch.stack([a.param_vector().cpu() for a in agents])
+    mean_vec   = final_vecs.mean(dim=0)
+    deviations = final_vecs - mean_vec
+    _, _, Vt   = torch.linalg.svd(deviations, full_matrices=False)
+    pc1, pc2   = Vt[0], Vt[1]
+
+    # auto-range to contain all agents + 30% padding
+    import numpy as np
+    final_a = (deviations @ pc1).numpy()
+    final_b = (deviations @ pc2).numpy()
+    spread  = max(abs(final_a).max(), abs(final_b).max(), 1e-3)
+    r       = float(spread * 1.3)
+
+    return dict(center=mean_vec, directions=(pc1, pc2), alpha_range=(-r, r))
 
 
 # ---------------------------------------------------------------------------

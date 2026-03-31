@@ -65,7 +65,7 @@ from visualization.plots import (
     plot_cka_matrix, plot_diversity_curves,
     plot_training_curves, plot_agent_distances,
 )
-from visualization.loss_landscape import compute_loss_grid, plot_loss_landscape
+from visualization.loss_landscape import compute_loss_grid, plot_loss_landscape, plot_agent_pca
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,14 @@ class ExperimentConfig:
         Compute loss landscape for agent 0 at the end of training.
         Expensive on CPU — set False for quick local runs.
 
+    landscape_grid_size : int
+        Number of points along each axis of the loss grid. 51 for final runs,
+        11 or 15 for quick debugging.
+
+    landscape_alpha_range : tuple[float, float]
+        (min, max) perturbation range for both landscape axes. Use a tight
+        range like (-0.5, 0.5) for fast debugging, (-2.0, 2.0) for full runs.
+
     checkpoint_dir : str or Path
         Where to save model checkpoints. Default 'experiments/checkpoints'.
 
@@ -144,7 +152,9 @@ class ExperimentConfig:
     weight_decay:      float        = 1e-4
     warm_start_steps:  int          = 0
     cka_interval:      int          = 5
-    landscape_at_end:  bool         = False
+    landscape_at_end:        bool                    = False
+    landscape_grid_size:     int                     = 51
+    landscape_alpha_range:   tuple[float, float]     = (-2.0, 2.0)
     checkpoint_dir:    Path         = Path('experiments/checkpoints')
     wandb_project:     str          = 'swarm-optimization'
     wandb_mode:        str          = 'offline'
@@ -254,7 +264,11 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
     cka_tracker = CKATracker(agents, probe_loader)
 
     # ── 5. Training loop ──────────────────────────────────────────────────
-    early_stopping = EarlyStopping(patience=3, min_delta=1e-3)
+    early_stopping = EarlyStopping(patience=5, min_delta=1e-3)
+
+    # Snapshot param vectors each epoch for trajectory visualization.
+    # Shape per entry: list of (D,) tensors, one per agent.
+    param_snapshots: list[list] = []
 
     def epoch_callback(epoch: int, metrics: dict) -> bool:
         """
@@ -316,6 +330,9 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
             f'acc={val_metrics["ensemble_acc"]:.3f}'
         )
 
+        # Snapshot weights for trajectory visualization
+        param_snapshots.append([a.param_vector().cpu().clone() for a in agents])
+
         # Early stopping — monitor ensemble val loss
         return early_stopping.step(val_metrics['ensemble_loss'])
 
@@ -352,24 +369,40 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
     # ── 9. Loss landscape (optional, expensive) ──────────────────────────
     cfg.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     if cfg.landscape_at_end:
+        # ── Single-agent landscape (random filter-normalized directions) ──
         print('\nComputing loss landscape for agent 0...')
         grid = compute_loss_grid(
-            agent      = agents[0],
-            criterion  = criterion,
-            loader     = probe_loader,
-            grid_size  = 51,
-            alpha_range= (-2.0, 2.0),
+            agent       = agents[0],
+            criterion   = criterion,
+            loader      = probe_loader,
+            grid_size   = cfg.landscape_grid_size,
+            alpha_range = cfg.landscape_alpha_range,
         )
         fig = plot_loss_landscape(
             grid,
-            agents       = agents,
-            agent_labels = [f'A{i}' for i in range(cfg.n_agents)],
-            title        = f'Loss Landscape — {cfg.run_name}',
+            title = f'Loss Landscape — {cfg.run_name}',
         )
         wandb.log({'final/loss_landscape': wandb.Image(fig)})
         landscape_path = cfg.checkpoint_dir / f'{cfg.run_name}_landscape.png'
         fig.savefig(landscape_path, dpi=150, bbox_inches='tight')
         print(f'Loss landscape saved → {landscape_path}')
+        plt.close(fig)
+
+        # ── Multi-agent PCA plot ──────────────────────────────────────────
+        print('Computing multi-agent PCA plot...')
+        fig = plot_agent_pca(
+            agents          = agents,
+            criterion       = criterion,
+            loader          = probe_loader,
+            param_snapshots = param_snapshots,
+            agent_labels    = [f'A{i}' for i in range(cfg.n_agents)],
+            grid_size       = cfg.landscape_grid_size,
+            title           = f'Agent PCA — {cfg.run_name}',
+        )
+        wandb.log({'final/agent_pca': wandb.Image(fig)})
+        pca_path = cfg.checkpoint_dir / f'{cfg.run_name}_pca.png'
+        fig.savefig(pca_path, dpi=150, bbox_inches='tight')
+        print(f'Agent PCA saved → {pca_path}')
         plt.close(fig)
 
     # ── 10. Save checkpoints ──────────────────────────────────────────────
@@ -389,8 +422,12 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
     wandb.finish()
 
     return {
-        'history':      history,
-        'test_metrics': test_metrics,
-        'cka_history':  cka_tracker.history,
-        'config':       cfg,
+        'history':         history,
+        'test_metrics':    test_metrics,
+        'cka_history':     cka_tracker.history,
+        'config':          cfg,
+        'agents':          agents,
+        'param_snapshots': param_snapshots,
+        'criterion':       criterion,
+        'probe_loader':    probe_loader,
     }
