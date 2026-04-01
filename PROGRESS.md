@@ -74,6 +74,229 @@ Monitors `ensemble_val_loss`. Patience was increased from 3 to 5 after the basel
 
 ---
 
+## Method — Technical Details
+
+### Swarm Rules
+
+All three rules are implemented as pure functions in `swarm/rules.py`. They take current state and return delta tensors — nothing is modified in-place. The timing within the training loop is critical and differs per rule.
+
+#### Training Loop Timing
+
+```
+for each batch:
+    1. forward + backward (all agents, no optimizer step)
+    2. pre_gradient_step()   ← gradient_alignment lives here
+         · build/refresh k-NN graph from current params
+         · blend each agent's gradient with neighborhood mean
+         · write blended gradients back before optimizer.step()
+    3. optimizer.step() (all agents)
+    4. post_gradient_step()  ← separation + cohesion live here
+         · read updated param vectors
+         · compute separation + cohesion deltas
+         · write corrected param vectors back
+```
+
+Alignment must run before `optimizer.step()` so the blended gradient is what Adam actually uses. Separation and cohesion run after `optimizer.step()` and directly modify parameter vectors — they are not gradients.
+
+The k-NN graph built in `pre_gradient_step` is cached and reused in `post_gradient_step` within the same training step, ensuring both hooks operate on the same neighbor relationships.
+
+---
+
+#### Rule 1 — Gradient Alignment (α)
+
+**Formula:**
+```
+g_i_new = (1 - α) * g_i  +  α * mean(g_j  for j in neighbors(i))
+```
+
+**Intuition:**
+Interpolates between each agent's own gradient and the mean gradient of its k-nearest neighbors in parameter space. α=0 is pure independent gradient descent (baseline). α=1 means the agent ignores its own gradient entirely and follows the neighborhood consensus. α∈(0,1) nudges agents toward gradient agreement, smoothing conflicting update directions.
+
+**Implementation:**
+```python
+for i, g_i in enumerate(grad_vectors):
+    neighbor_grads = torch.stack([grad_vectors[j] for j in neighbor_map[i]])
+    g_mean  = neighbor_grads.mean(dim=0)
+    g_new   = (1.0 - alpha) * g_i + alpha * g_mean
+```
+
+**Fast-path:** if α=0, returns the original gradient list unchanged with no computation.
+
+**Where it operates:** gradient space, pre-`optimizer.step()`.
+
+---
+
+#### Rule 2 — Separation (β)
+
+**Formula:**
+```
+For each neighbor j of agent i:
+    direction_ij = (θ_i - θ_j) / (||θ_i - θ_j||² + ε)
+
+Δθ_i = β * Σ_j  direction_ij
+```
+
+**Intuition:**
+Applies a repulsive force pushing each agent away from its k-nearest neighbors in parameter space. The force is **inverse-square weighted** — it is strongest when two agents are very close (preventing collapse) and weakens as they move apart. This is the primary driver of diversity.
+
+**Key implementation detail:**
+The denominator is `||θ_i - θ_j||²` (squared distance), but the numerator `(θ_i - θ_j)` already contains one factor of distance. So the net force magnitude scales as `β / dist` (inverse-linear in distance), not inverse-square. The force is always directed away from each neighbor.
+
+```python
+for j in neighbor_map[i]:
+    diff    = theta_i - param_vectors[j]     # direction away from j
+    dist_sq = (diff * diff).sum()            # ||θ_i - θ_j||²
+    force  += diff / (dist_sq + eps)         # inverse-square weighting
+deltas.append(beta * force)
+```
+
+`eps=1e-8` prevents division by zero when two agents occupy nearly the same point.
+
+**Where it operates:** parameter space, post-`optimizer.step()`.
+
+---
+
+#### Rule 3 — Cohesion (γ)
+
+**Formula:**
+```
+centroid_i = mean(θ_j  for j in neighbors(i))
+direction  = centroid_i - θ_i
+Δθ_i = γ * direction / (||direction|| + ε)
+```
+
+**Why normalized (constant-magnitude) rather than linear-spring?**
+A linear spring (`Δθ_i = γ * (centroid - θ_i)`) applies force proportional to distance — agents that have drifted far get yanked back hard. This fights against separation, which is trying to keep them spread out.
+
+Normalizing to unit direction gives a **constant-magnitude pull of exactly γ** toward the centroid regardless of distance. Combined with the inverse-linear separation force, this produces a stable equilibrium:
+
+```
+At equilibrium:  β / dist*  =  γ   →   dist* = β / γ
+```
+
+The ratio β/γ is therefore the primary design knob for equilibrium spacing. For the current defaults (β=0.5, γ=0.1): `dist* = 5.0`.
+
+```python
+centroid  = neighbor_params.mean(dim=0)
+direction = centroid - theta_i
+dist      = direction.norm()
+delta     = gamma * direction / (dist + eps)   # constant magnitude γ
+```
+
+**Where it operates:** parameter space, post-`optimizer.step()`, summed with separation delta before writing back:
+```
+θ_i ← θ_i  +  Δθ_sep  +  Δθ_coh
+```
+
+---
+
+### Topology — k-NN Graph
+
+**Implementation:** `swarm/topology.py` — `KNNTopology` class.
+
+The interaction graph is **directed k-NN**: each agent interacts with its k nearest neighbors in L2 parameter space. Directionality means agent A may list B as a neighbor without B listing A — this asymmetry is a key source of uneven force distribution.
+
+**Distance computation:**
+```python
+P       = torch.stack(param_vectors)              # (N, D)
+sq_norm = (P * P).sum(dim=1, keepdim=True)        # (N, 1)
+dist_sq = sq_norm + sq_norm.T - 2.0 * (P @ P.T)  # (N, N) pairwise squared L2
+dist_sq.fill_diagonal_(float('inf'))              # exclude self
+_, idx  = torch.topk(dist_sq, k=k, largest=False, sorted=True)
+```
+
+Uses the identity `||p_i - p_j||² = ||p_i||² + ||p_j||² - 2·p_i·p_j` to compute all pairwise distances in a single matrix multiply. Complexity: O(N²·D) time, O(N²) space. For N=10 this is negligible.
+
+**Caching:**
+The graph is cached and reused until `(current_step - last_update) >= update_interval`. Default `update_interval=1` recomputes every training step. The pre- and post-gradient hooks within the same step share the same cached graph.
+
+**Asymmetry and the "in-degree" problem:**
+With k=3 and N=10, each agent has exactly 3 outgoing edges (agents it pushes/pulls). But **in-degree** (how many agents push/pull a given agent) varies. An agent that is geometrically central early in training may appear in many others' k-NN lists, receiving disproportionately large forces. This is the mechanism underlying the instability observed in sep_coh and full_swarm.
+
+**Full connectivity:** setting k=N-1 recovers all-to-all interaction. In this case the graph is symmetric and in-degree equals k for all agents.
+
+---
+
+### CKA — Centered Kernel Alignment
+
+**Reference:** Kornblith et al. 2019 — "Similarity of Neural Network Representations Revisited" (arXiv:1905.00414)
+
+**Implementation:** `metrics/cka.py`
+
+**What it measures:**
+Given a fixed probe dataset passed through two networks A and B, CKA measures how similar their internal representations are at a specific layer — invariant to orthogonal transformation and isotropic scaling of activations. This means two networks with very different weight values can still have high CKA if they compute the same geometric relationships between inputs.
+
+**Mathematical derivation:**
+
+Step 1 — Collect activations on the probe set:
+```
+X  shape (N_probe, D_a)  — activations from network A at layer l
+Y  shape (N_probe, D_b)  — activations from network B at layer l
+```
+N_probe must match; D_a and D_b may differ (comparison is in sample space, not feature space).
+
+Step 2 — Compute linear Gram matrices:
+```
+K = X @ X.T    (N_probe, N_probe)  — pairwise inner products in A's representation space
+L = Y @ Y.T    (N_probe, N_probe)  — pairwise inner products in B's representation space
+```
+
+Step 3 — Double center (remove row, column, and grand means):
+```
+K_c = K - row_means(K) - col_means(K) + grand_mean(K)
+L_c = L - row_means(L) - col_means(L) + grand_mean(L)
+```
+Implemented as `K - K.mean(1, keepdim=True) - K.mean(0, keepdim=True) + K.mean()`.
+
+Step 4 — HSIC (Hilbert-Schmidt Independence Criterion):
+```
+HSIC(K, L) = (1/(N-1)²) * trace(K_c @ L_c)
+```
+Computed efficiently as `(K_c * L_c).sum() / (N-1)²` using the identity `trace(A@B) = (A * B.T).sum()` and the fact that both matrices are symmetric.
+
+Step 5 — Normalize:
+```
+CKA(X, Y) = HSIC(K, L) / sqrt(HSIC(K,K) * HSIC(L,L))
+```
+Result is in [0, 1]. Clamped to [0, 1] after division to handle numerical edge cases.
+
+**Probe layers:**
+CKA is computed at four named probe points in TinyNet: `block1`, `block2`, `block3`, and `gap` (Global Average Pooling). The GAP layer is the most semantically meaningful — it is the final compressed feature vector before the classification head. All ablation analysis focuses on GAP CKA.
+
+**Computation schedule:**
+`CKATracker.compute(epoch)` is called every `cka_interval=5` epochs. Each call does one forward pass per agent through the probe loader, then computes the N×N pairwise CKA matrix (N(N-1)/2 calls to `linear_cka`). For N=10 agents this is 45 CKA computations per checkpoint.
+
+**Summary statistic:**
+`mean_sim` = mean of the off-diagonal entries of the CKA matrix. High mean_sim = agents are learning similar representations (low diversity). Reported as "GAP CKA" in the ablation results table.
+
+**Important distinction:**
+CKA measures **representational similarity** (functional), not **weight similarity** (structural). The separation condition demonstrates this: weight-space diversity of 116 (high structural diversity) but GAP CKA of 0.869 (agents compute similar functions). Neural networks with different weights can converge to functionally equivalent representations due to symmetries in the loss landscape.
+
+---
+
+### Diversity Metric
+
+**Implementation:** `baselines/single_trainer.py` — `EnsembleTrainer.evaluate()`
+
+The diversity metric reported in the ablation results table is the **mean pairwise L2 distance in parameter space**, computed at test time:
+
+```python
+param_vecs = torch.stack([a.param_vector() for a in agents])  # (N, D)
+diffs      = param_vecs.unsqueeze(0) - param_vecs.unsqueeze(1) # (N, N, D)
+pairwise   = torch.norm(diffs, dim=2)                           # (N, N) L2 distances
+diversity  = pairwise.sum() / (N * (N - 1))                     # mean off-diagonal
+```
+
+This averages over all N(N-1) ordered pairs (excludes diagonal). For N=10 agents this averages 90 pairwise distances.
+
+**Units:** same as the L2 norm of a parameter vector. For TinyNet (~95K parameters), this is a high-dimensional distance — the values (e.g. 22.45 for baseline, 116.36 for separation) are not interpretable in absolute terms but are directly comparable across conditions run with the same architecture.
+
+**During training:** a separate diversity measure (`diversity/mean_param_distance`) is also logged per epoch for SwarmTrainer conditions using `KNNTopology.pairwise_distances()`, which computes the same pairwise L2 matrix via the efficient matrix multiply formulation.
+
+**Relationship to CKA:** diversity measures structural distance in weight space; CKA measures functional distance in representation space. They can diverge significantly — separation produces the largest weight-space diversity but near-baseline representational similarity, confirming that these are measuring fundamentally different things.
+
+---
+
 ## Ablation Design
 
 All 2³ = 8 combinations of the three rules:
