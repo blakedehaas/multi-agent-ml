@@ -263,15 +263,16 @@ def run_ablation(cfg: AblationConfig) -> dict[str, dict]:
             print(f'  Landscape saved → {path}')
 
             fig = plot_agent_pca(
-                agents          = agents,
-                criterion       = res['criterion'],
-                loader          = res['probe_loader'],
-                param_snapshots = param_snapshots,
-                agent_labels    = [f'A{i}' for i in range(cfg.n_agents)],
-                grid_size       = cfg.landscape_grid_size,
-                title           = f'Agent PCA — {label}',
-                vmin            = pca_vmin,
-                vmax            = pca_vmax,
+                agents           = agents,
+                criterion        = res['criterion'],
+                loader           = res['probe_loader'],
+                param_snapshots  = param_snapshots,
+                agent_labels     = [f'A{i}' for i in range(cfg.n_agents)],
+                grid_size        = cfg.landscape_grid_size,
+                title            = f'Agent PCA — {label}',
+                vmin             = pca_vmin,
+                vmax             = pca_vmax,
+                precomputed_grid = pca_grids[label],
             )
             wandb.log({'final/agent_pca': wandb.Image(fig)})
             path = cfg.checkpoint_dir / f'{label}_pca.png'

@@ -360,6 +360,7 @@ def plot_agent_pca(
     azim: float = -60.0,
     vmin: float | None = None,
     vmax: float | None = None,
+    precomputed_grid: dict | None = None,
 ) -> plt.Figure:
     """
     Plot all agents' final positions and training trails on a loss surface
@@ -385,12 +386,18 @@ def plot_agent_pca(
     log_scale : bool
     grid_size : int
         Points per axis for the loss grid. 21 is fast; use 51 for final runs.
+        Ignored when precomputed_grid is provided.
     padding : float
         Fraction of the agent spread to add around the grid boundary so
-        no agent dot sits on the edge.
+        no agent dot sits on the edge. Ignored when precomputed_grid is provided.
     figsize : tuple
     elev : float
     azim : float
+    precomputed_grid : dict or None
+        Output of compute_loss_grid() using PC1/PC2 axes. When provided the
+        grid computation step is skipped entirely — useful in run_ablation
+        where all grids are computed upfront to find the shared color scale,
+        avoiding a redundant second pass over the data.
 
     Returns
     -------
@@ -424,22 +431,28 @@ def plot_agent_pca(
     final_b = (deviations @ pc2).numpy()
 
     # ── 3. Auto-compute grid range to contain all agents + padding ────────
-    spread_a = max(abs(final_a.max()), abs(final_a.min()))
-    spread_b = max(abs(final_b.max()), abs(final_b.min()))
-    spread   = max(spread_a, spread_b, 1e-3)   # guard against degenerate case
-    r        = float(spread * (1.0 + padding))
-    alpha_range = (-r, r)
+    #    Skipped when a pre-computed grid is provided (range already set).
+    if precomputed_grid is None:
+        spread_a = max(abs(final_a.max()), abs(final_a.min()))
+        spread_b = max(abs(final_b.max()), abs(final_b.min()))
+        spread   = max(spread_a, spread_b, 1e-3)
+        r        = float(spread * (1.0 + padding))
+        alpha_range = (-r, r)
 
     # ── 4. Compute loss grid using PC1/PC2 centered on mean ───────────────
-    grid = compute_loss_grid(
-        agent       = agents[0],
-        criterion   = criterion,
-        loader      = loader,
-        grid_size   = grid_size,
-        alpha_range = alpha_range,
-        center      = mean_vec,
-        directions  = (pc1, pc2),
-    )
+    #    Reuse pre-computed grid when available to avoid redundant forward passes.
+    if precomputed_grid is not None:
+        grid = precomputed_grid
+    else:
+        grid = compute_loss_grid(
+            agent       = agents[0],
+            criterion   = criterion,
+            loader      = loader,
+            grid_size   = grid_size,
+            alpha_range = alpha_range,
+            center      = mean_vec,
+            directions  = (pc1, pc2),
+        )
 
     loss_grid  = grid['loss_grid']
     alpha_vals = grid['alpha_vals']
