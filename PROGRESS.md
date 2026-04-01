@@ -396,23 +396,23 @@ Ran sep_coh and full_swarm only (the two unstable conditions from the ablation) 
 
 | Config | n | k | k divides n? | k/n ratio |
 |--------|---|---|--------------|-----------|
-| n9_k3  | 9 | 3 | ✅ | 0.33 |
-| n10_k3 | 10 | 3 | ❌ | 0.30 ← original |
-| n12_k3 | 12 | 3 | ✅ | 0.25 |
-| n12_k4 | 12 | 4 | ✅ | 0.33 |
+| n9_k3  | 9 | 3 | yes | 0.33 |
+| n10_k3 | 10 | 3 | no  | 0.30 ← original |
+| n12_k3 | 12 | 3 | yes | 0.25 |
+| n12_k4 | 12 | 4 | yes | 0.33 |
 
 ### Results
 
-| Config | Condition | n | k | k/n | k÷n? | Ens Acc | Diversity | GAP CKA |
-|--------|-----------|---|---|-----|------|---------|-----------|---------|
-| n9_k3 | sep_coh | 9 | 3 | 0.33 | ✅ | 0.739 | 14.88 | 0.871 |
-| n9_k3 | full_swarm | 9 | 3 | 0.33 | ✅ | 0.702 | 14.90 | 0.862 |
-| n10_k3 | sep_coh | 10 | 3 | 0.30 | ❌ | 0.747 | 17.95 | 0.821 |
-| n10_k3 | full_swarm | 10 | 3 | 0.30 | ❌ | 0.714 | 15.07 | 0.867 |
-| n12_k3 | sep_coh | 12 | 3 | 0.25 | ✅ | 0.747 | 16.27 | 0.784 |
-| n12_k3 | full_swarm | 12 | 3 | 0.25 | ✅ | 0.741 | 16.85 | 0.860 |
-| n12_k4 | sep_coh | 12 | 4 | 0.33 | ✅ | 0.754 | 16.81 | 0.913 |
-| n12_k4 | full_swarm | 12 | 4 | 0.33 | ✅ | 0.753 | 17.34 | 0.907 |
+| Config | Condition | n | k | k/n | k divides n? | Ens Acc | Diversity | GAP CKA |
+|--------|-----------|---|---|-----|--------------|---------|-----------|---------|
+| n9_k3 | sep_coh | 9 | 3 | 0.33 | yes | 0.739 | 14.88 | 0.871 |
+| n9_k3 | full_swarm | 9 | 3 | 0.33 | yes | 0.702 | 14.90 | 0.862 |
+| n10_k3 | sep_coh | 10 | 3 | 0.30 | no  | 0.747 | 17.95 | 0.821 |
+| n10_k3 | full_swarm | 10 | 3 | 0.30 | no  | 0.714 | 15.07 | 0.867 |
+| n12_k3 | sep_coh | 12 | 3 | 0.25 | yes | 0.747 | 16.27 | 0.784 |
+| n12_k3 | full_swarm | 12 | 3 | 0.25 | yes | 0.741 | 16.85 | 0.860 |
+| n12_k4 | sep_coh | 12 | 4 | 0.33 | yes | 0.754 | 16.81 | 0.913 |
+| n12_k4 | full_swarm | 12 | 4 | 0.33 | yes | 0.753 | 17.34 | 0.907 |
 
 ### Observations
 
@@ -440,13 +440,13 @@ To isolate the effect of neighborhood size, we plan to run sep_coh and full_swar
 
 | k | k divides 12? | k/n | Notes |
 |---|---------------|-----|-------|
-| 3 | ✅ | 0.25 | Known unstable |
-| 4 | ✅ | 0.33 | Known stable |
-| 5 | ❌ | 0.42 | Non-divisor |
-| 6 | ✅ | 0.50 | Half the swarm |
-| 8 | ❌ | 0.67 | Non-divisor, dense |
-| 9 | ✅ | 0.75 | Three-quarters |
-| 11 | ❌ | 0.92 | Near full-connectivity |
+| 3 | yes | 0.25 | Known unstable |
+| 4 | yes | 0.33 | Known stable |
+| 5 | no  | 0.42 | Non-divisor |
+| 6 | yes | 0.50 | Half the swarm |
+| 8 | no  | 0.67 | Non-divisor, dense |
+| 9 | yes | 0.75 | Three-quarters |
+| 11 | no  | 0.92 | Near full-connectivity |
 
 This covers divisors and non-divisors at multiple k/n ratios. If stability tracks divisibility, we expect k=5, 8, 11 to be unstable and k=6, 9 stable. If stability tracks absolute k, we expect a threshold somewhere between k=3 and k=4, and monotone improvement above it. k=11 (near all-to-all) should be maximally stable as a reference.
 
