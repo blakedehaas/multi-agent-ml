@@ -446,7 +446,7 @@ To isolate the effect of neighborhood size, we plan to run sep_coh and full_swar
 | 6 | yes | 0.50 | Half the swarm |
 | 8 | no  | 0.67 | Non-divisor, dense |
 | 9 | yes | 0.75 | Three-quarters |
-| 11 | no  | 0.92 | Near full-connectivity |
+| 11 | no  | 0.92 | Full connectivity (k = n-1) |
 
 This covers divisors and non-divisors at multiple k/n ratios. If stability tracks divisibility, we expect k=5, 8, 11 to be unstable and k=6, 9 stable. If stability tracks absolute k, we expect a threshold somewhere between k=3 and k=4, and monotone improvement above it. k=11 (near all-to-all) should be maximally stable as a reference.
 
