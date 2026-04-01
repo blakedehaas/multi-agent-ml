@@ -352,6 +352,9 @@ The full_swarm training curve terminates around epoch 33-35, not 50. The rising 
 ### 7. Separation increases weight diversity but not representational diversity
 Despite separation producing diversity of 116 vs baseline's 22, the GAP-layer CKA for separation (0.869) is close to baseline (0.904). Agents are finding different weight configurations that compute nearly identical functions — consistent with the neural network loss landscape's flat minima and permutation symmetry.
 
+### 9. Topology sweep: divisibility does not predict stability; k=4 stabilizes both conditions
+Across four (n, k) configurations, instability persists in all three k=3 configs (n=9, 10, 12) regardless of whether k divides n. n12_k4 is the only configuration where sep_coh and full_swarm both run cleanly to epoch 50. This weakens the divisibility hypothesis and is consistent with — but does not confirm — an absolute neighborhood size threshold. The k sweep at n=12 (k=3,4,5,6,8,9,11) is designed to test this directly.
+
 ### 8. CKA matrix patterns by condition
 - **baseline / alignment**: Uniformly yellow-green. Moderate, consistent inter-agent similarity.
 - **cohesion / align_coh**: More uniform yellow. Agents converge to near-identical representations. High CKA (0.940, 0.953).
@@ -386,19 +389,70 @@ Key properties:
 
 ---
 
+## Topology Sweep Results (n vs. k — Completed)
+
+### Design
+Ran sep_coh and full_swarm only (the two unstable conditions from the ablation) across four (n, k) configurations. The goal was to test two competing hypotheses for the instability mechanism: (a) β/γ force imbalance, or (b) k-NN graph asymmetry tied to whether k divides n evenly.
+
+| Config | n | k | k divides n? | k/n ratio |
+|--------|---|---|--------------|-----------|
+| n9_k3  | 9 | 3 | ✅ | 0.33 |
+| n10_k3 | 10 | 3 | ❌ | 0.30 ← original |
+| n12_k3 | 12 | 3 | ✅ | 0.25 |
+| n12_k4 | 12 | 4 | ✅ | 0.33 |
+
+### Results
+
+| Config | Condition | n | k | k/n | k÷n? | Ens Acc | Diversity | GAP CKA |
+|--------|-----------|---|---|-----|------|---------|-----------|---------|
+| n9_k3 | sep_coh | 9 | 3 | 0.33 | ✅ | 0.739 | 14.88 | 0.871 |
+| n9_k3 | full_swarm | 9 | 3 | 0.33 | ✅ | 0.702 | 14.90 | 0.862 |
+| n10_k3 | sep_coh | 10 | 3 | 0.30 | ❌ | 0.747 | 17.95 | 0.821 |
+| n10_k3 | full_swarm | 10 | 3 | 0.30 | ❌ | 0.714 | 15.07 | 0.867 |
+| n12_k3 | sep_coh | 12 | 3 | 0.25 | ✅ | 0.747 | 16.27 | 0.784 |
+| n12_k3 | full_swarm | 12 | 3 | 0.25 | ✅ | 0.741 | 16.85 | 0.860 |
+| n12_k4 | sep_coh | 12 | 4 | 0.33 | ✅ | 0.754 | 16.81 | 0.913 |
+| n12_k4 | full_swarm | 12 | 4 | 0.33 | ✅ | 0.753 | 17.34 | 0.907 |
+
+### Observations
+
+**n12_k4 is the only configuration where both conditions run cleanly to epoch 50.** All k=3 configurations — n9_k3, n10_k3, and n12_k3 — show at least one runaway agent regardless of whether k divides n. This rules out divisibility as a sufficient condition for stability.
+
+The training curves show a consistent pattern across k=3 configs: one agent destabilizes first, and in some runs a second follows within ~15 epochs, consistent with the propagation-via-k-NN mechanism noted in Finding 5.
+
+At n12_k4, the sep_coh / full_swarm performance gap almost vanishes (0.754 vs 0.753). In all k=3 configurations full_swarm underperforms sep_coh by ~0.03–0.04. This suggests that stability is necessary for alignment to contribute positively, rather than alignment being inherently neutral (as it appeared in the isolated ablation).
+
+n12_k4 also achieves the highest ensemble accuracy of any swarm configuration tested to date (0.754), and the highest GAP CKA values (0.913/0.907) — both agents and representations are more cohesive when training is stable.
+
+### Candidate Hypotheses (not yet confirmed)
+
+The observation that n12_k4 is stable and all k=3 configurations are not is consistent with at least two non-exclusive mechanisms:
+
+1. **Absolute neighborhood size**: k=4 provides more force averaging per agent, narrowing in-degree variance enough to dampen oscillations before they amplify. Under this view, k=3 is simply below a stability threshold regardless of n.
+
+2. **In-degree distribution narrowing**: with k=4 and n=12, the maximum possible in-degree (number of agents for whom a given agent is among the k=4 nearest) is bounded more tightly than with k=3. The larger k leaves fewer agents with near-zero incoming force, preventing the "unconstrained" trajectories that seed instability.
+
+These hypotheses cannot be distinguished with the current data because k and n co-vary only at the n12 configurations. A sweep holding n=12 fixed and varying k alone is needed.
+
+### Proposed Follow-Up: k Sweep at n=12
+
+To isolate the effect of neighborhood size, we plan to run sep_coh and full_swarm at n=12 across the following k values:
+
+| k | k divides 12? | k/n | Notes |
+|---|---------------|-----|-------|
+| 3 | ✅ | 0.25 | Known unstable |
+| 4 | ✅ | 0.33 | Known stable |
+| 5 | ❌ | 0.42 | Non-divisor |
+| 6 | ✅ | 0.50 | Half the swarm |
+| 8 | ❌ | 0.67 | Non-divisor, dense |
+| 9 | ✅ | 0.75 | Three-quarters |
+| 11 | ❌ | 0.92 | Near full-connectivity |
+
+This covers divisors and non-divisors at multiple k/n ratios. If stability tracks divisibility, we expect k=5, 8, 11 to be unstable and k=6, 9 stable. If stability tracks absolute k, we expect a threshold somewhere between k=3 and k=4, and monotone improvement above it. k=11 (near all-to-all) should be maximally stable as a reference.
+
+---
+
 ## Ongoing Experiments
-
-### Topology Sweep (in progress)
-Testing whether the k-NN neighborhood size being a factor of n_agents affects stability. Runs only sep_coh and full_swarm (the unstable conditions) across four (n, k) configurations:
-
-| Config | n | k | n mod k | k/n ratio |
-|--------|---|---|---------|-----------|
-| n9_k3  | 9 | 3 | 0 ✅ | 0.33 |
-| n10_k3 | 10 | 3 | 1 ❌ | 0.30 ← current |
-| n12_k3 | 12 | 3 | 0 ✅ | 0.25 |
-| n12_k4 | 12 | 4 | 0 ✅ | 0.33 |
-
-Hypothesis: instability may be tied to asymmetric k-NN graphs when k does not divide n evenly, rather than purely to the β/γ force imbalance.
 
 ### Bayesian Hyperparameter Sweep
 Bayesian optimization over the (α, β, γ) force strength space for the full_swarm condition. Will explore whether a different β/γ ratio can recover the benefit of swarm coordination without inducing instability. Focus on much smaller β (0.05–0.2 range).
@@ -407,7 +461,7 @@ Bayesian optimization over the (α, β, γ) force strength space for the full_sw
 
 ## Open Questions
 
-1. **Force balance vs. topology**: Is the instability primarily caused by the β/γ ratio (force imbalance) or by the k/n_agents ratio (graph asymmetry)? The topology sweep will help answer this.
+1. **Force balance vs. neighborhood size**: Is the instability primarily caused by the β/γ ratio (force imbalance) or by the absolute value of k (insufficient force averaging)? The topology sweep ruled out k/n divisibility as a sufficient explanation — all k=3 configs are unstable — but cannot yet distinguish "k must be ≥ some threshold" from "k/n ratio must exceed some threshold." The k sweep at n=12 will test this directly.
 
 2. **Does alignment ever help?**: At α=0.3 it is essentially neutral. Is there a regime (larger α, or combined with a stable β/γ) where gradient alignment produces measurable benefit?
 
@@ -421,7 +475,8 @@ Bayesian optimization over the (α, β, γ) force strength space for the full_sw
 
 ## Next Steps
 
-- [ ] Analyze topology sweep results — determine if k/n divisibility matters
+- [x] Analyze topology sweep results — divisibility ruled out; k=4 stabilizes both conditions
+- [ ] Run k sweep at n=12 (k=3,4,5,6,8,9,11) to isolate neighborhood size effect
 - [ ] Integrate Bayesian sweep results from teammate
 - [ ] Re-run promising conditions with different random seeds for robustness
 - [ ] Investigate warm-up period effect on stability
