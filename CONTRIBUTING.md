@@ -48,6 +48,12 @@ Checkpoints and figures are saved to a shared Drive folder so both collaborators
 
 The shortcut must be at the root of My Drive so that `/content/drive/MyDrive/Final_Project` resolves to the same path for both collaborators. Checkpoints and figures saved by either person land in the same folder.
 
+> **Python 3.12 note:** Colab's default IPython (7.34.0) is incompatible with Python 3.12 and will throw `ModuleNotFoundError: No module named 'imp'` when autoreload is loaded. The install cell upgrades IPython to resolve this. You will see two dependency warnings — both are non-fatal:
+> - `google-colab requires ipython==7.34.0` — Colab continues to work fine in practice
+> - `moviepy requires decorator<5.0` — moviepy is not used in this project
+>
+> If Colab widgets behave unexpectedly during a session, the IPython upgrade is the first thing to check.
+
 ### 2. Weights & Biases
 Each collaborator logs in with their own W&B account:
 ```python

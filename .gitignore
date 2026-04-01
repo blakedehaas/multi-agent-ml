@@ -9,7 +9,10 @@ __pycache__/
 *.egg-info/
 
 # Data / checkpoints (large files)
-data/
+# Ignore data directory contents but keep source modules
+data/*
+!data/*.py
+!data/__init__.py
 *.pt
 *.pth
 *.ckpt
