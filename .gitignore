@@ -23,4 +23,10 @@ data/*
 # OS
 .DS_Store
 
+# IDE
+.idea/
+
+# Local tooling
+.claude/
+
 WORKFLOW_PERSONAL.md
