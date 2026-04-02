@@ -195,6 +195,10 @@ def build_agents(n: int, config: TrainingConfig, seed: int) -> list[AgentTrainer
     for i in range(n):
         torch.manual_seed(seed + i)
         model = TinyNet()
+        if config.device != 'cpu':
+            # fullgraph=False allows partial graph compilation, which is more
+            # permissive and avoids errors from dynamic control flow in tqdm.
+            model = torch.compile(model, fullgraph=False)
         agents.append(AgentTrainer(model, config))
     return agents
 
