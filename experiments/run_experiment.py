@@ -143,11 +143,17 @@ class ExperimentConfig:
         Which dataset to use. Either 'cifar10' or 'mnist'.
         Default 'cifar10'. Use 'mnist' for fast hyperparameter sweeps.
 
+    num_workers : int
+        DataLoader worker processes for parallel data loading. Default 2.
+        Set to 0 for local CPU debugging. On Colab, 2 matches the available
+        CPU count and avoids context-switching overhead from more workers.
+
     run_name : str or None
         Human-readable W&B run name. Auto-generated from SwarmConfig if None.
     """
     swarm:             SwarmConfig  = field(default_factory=SwarmConfig)
     dataset:           str          = 'cifar10'
+    num_workers:       int          = 2
     n_agents:          int          = 10
     epochs:            int          = 30
     batch_size:        int          = 512
@@ -242,7 +248,7 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
             batch_size      = cfg.batch_size,
             subset_size     = cfg.subset_size,
             seed            = cfg.seed,
-            num_workers     = 0,
+            num_workers     = cfg.num_workers,
             expand_channels = True,
         )
         probe_loader = get_mnist_probe(n_samples=512, batch_size=512)
@@ -251,7 +257,7 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
             batch_size  = cfg.batch_size,
             subset_size = cfg.subset_size,
             seed        = cfg.seed,
-            num_workers = 0,
+            num_workers = cfg.num_workers,
         )
         probe_loader = get_cifar10_probe(n_samples=512, batch_size=512)
 

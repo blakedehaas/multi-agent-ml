@@ -97,6 +97,9 @@ class AblationConfig:
     # Dataset — 'cifar10' for final runs, 'mnist' for hyperparameter sweeps
     dataset: str = 'cifar10'
 
+    # DataLoader workers — 2 for Colab, 0 for local CPU debugging
+    num_workers: int = 2
+
     # Subset of conditions to run — None means all 8
     conditions: Optional[list[str]] = None
 
@@ -180,6 +183,7 @@ def run_ablation(cfg: AblationConfig) -> dict[str, dict]:
             swarm            = swarm_cfg,
             run_name         = label,
             dataset          = cfg.dataset,
+            num_workers      = cfg.num_workers,
             n_agents         = cfg.n_agents,
             epochs           = cfg.epochs,
             batch_size       = cfg.batch_size,
