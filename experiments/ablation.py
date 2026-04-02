@@ -97,8 +97,9 @@ class AblationConfig:
     # Dataset — 'cifar10' for final runs, 'mnist' for hyperparameter sweeps
     dataset: str = 'cifar10'
 
-    # DataLoader workers — 2 for Colab, 0 for local CPU debugging
-    num_workers: int = 2
+    # DataLoader workers — 0 avoids Python 3.12 multiprocessing cleanup
+    # errors on Colab. GPU is the bottleneck for TinyNet anyway.
+    num_workers: int = 0
 
     # Subset of conditions to run — None means all 8
     conditions: Optional[list[str]] = None

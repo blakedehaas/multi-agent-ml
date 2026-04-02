@@ -144,16 +144,17 @@ class ExperimentConfig:
         Default 'cifar10'. Use 'mnist' for fast hyperparameter sweeps.
 
     num_workers : int
-        DataLoader worker processes for parallel data loading. Default 2.
-        Set to 0 for local CPU debugging. On Colab, 2 matches the available
-        CPU count and avoids context-switching overhead from more workers.
+        DataLoader worker processes. Default 0.
+        num_workers > 0 causes Python 3.12 multiprocessing cleanup errors on
+        Colab, and the benefit is negligible for a small model like TinyNet
+        where the GPU is the bottleneck, not data loading.
 
     run_name : str or None
         Human-readable W&B run name. Auto-generated from SwarmConfig if None.
     """
     swarm:             SwarmConfig  = field(default_factory=SwarmConfig)
     dataset:           str          = 'cifar10'
-    num_workers:       int          = 2
+    num_workers:       int          = 0
     n_agents:          int          = 10
     epochs:            int          = 30
     batch_size:        int          = 512
