@@ -217,14 +217,6 @@ class EnsembleTrainer(ABC):
         self.criterion = criterion
         self._global_step: int = 0
 
-        # Mixed precision — one GradScaler per agent.
-        # Disabled automatically when not on CUDA (CPU/MPS runs unaffected).
-        self._use_amp = agents[0].device != 'cpu'
-        self._scalers = [
-            torch.amp.GradScaler('cuda', enabled=self._use_amp)
-            for _ in agents
-        ]
-
     # ------------------------------------------------------------------
     # Hooks — override in subclasses
     # ------------------------------------------------------------------
@@ -272,29 +264,22 @@ class EnsembleTrainer(ABC):
         X = batch[0].to(device)
         y = batch[1].to(device)
 
-        # Stage 1: forward + backward for each agent (mixed precision)
+        # Stage 1: forward + backward for each agent
         losses = []
-        for i, agent in enumerate(self.agents):
+        for agent in self.agents:
             agent.optimizer.zero_grad()
-            with torch.autocast('cuda', enabled=self._use_amp):
-                loss = self.criterion(agent.model(X), y)
-            self._scalers[i].scale(loss).backward()
+            loss = self.criterion(agent.model(X), y)
+            loss.backward()
             losses.append(loss.item())
 
         # Stages 2–4 are gated by the warm-start schedule
         swarm_active = self._global_step >= self.agents[0].config.warm_start_steps
 
         if swarm_active:
-            # Unscale gradients back to float32 before swarm rules read them.
-            # Without this, grad_vector() would return scaled values and the
-            # alignment rule would compute incorrect blended gradients.
-            for i, agent in enumerate(self.agents):
-                self._scalers[i].unscale_(agent.optimizer)
             self.pre_gradient_step()
 
-        for i, agent in enumerate(self.agents):
-            self._scalers[i].step(agent.optimizer)
-            self._scalers[i].update()
+        for agent in self.agents:
+            agent.optimizer.step()
             agent.optimizer.zero_grad()
             agent.step_count += 1
 
