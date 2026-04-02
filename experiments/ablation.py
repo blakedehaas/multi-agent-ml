@@ -94,6 +94,9 @@ class AblationConfig:
     wandb_project:    str           = 'swarm-optimization'
     wandb_mode:       str           = 'offline'
 
+    # Dataset — 'cifar10' for final runs, 'mnist' for hyperparameter sweeps
+    dataset: str = 'cifar10'
+
     # Subset of conditions to run — None means all 8
     conditions: Optional[list[str]] = None
 
@@ -176,6 +179,7 @@ def run_ablation(cfg: AblationConfig) -> dict[str, dict]:
         exp_cfg = ExperimentConfig(
             swarm            = swarm_cfg,
             run_name         = label,
+            dataset          = cfg.dataset,
             n_agents         = cfg.n_agents,
             epochs           = cfg.epochs,
             batch_size       = cfg.batch_size,

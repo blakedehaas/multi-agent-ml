@@ -59,7 +59,8 @@ from baselines.single_trainer import (
 )
 from swarm.trainer import SwarmConfig, SwarmTrainer
 from models.cnn import TinyNet
-from data.cifar import get_cifar10_loaders, get_probe_loader
+from data.cifar import get_cifar10_loaders, get_probe_loader as get_cifar10_probe
+from data.mnist import get_mnist_loaders, get_probe_loader as get_mnist_probe
 from metrics.cka import CKATracker
 from visualization.plots import (
     plot_cka_matrix, plot_diversity_curves,
@@ -138,10 +139,15 @@ class ExperimentConfig:
         'online', 'offline', or 'disabled'.
         Use 'offline' for local dev, 'online' for Colab A100 runs.
 
+    dataset : str
+        Which dataset to use. Either 'cifar10' or 'mnist'.
+        Default 'cifar10'. Use 'mnist' for fast hyperparameter sweeps.
+
     run_name : str or None
         Human-readable W&B run name. Auto-generated from SwarmConfig if None.
     """
     swarm:             SwarmConfig  = field(default_factory=SwarmConfig)
+    dataset:           str          = 'cifar10'
     n_agents:          int          = 10
     epochs:            int          = 30
     batch_size:        int          = 512
@@ -213,6 +219,7 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
         name    = cfg.run_name,
         mode    = cfg.wandb_mode,
         config  = {
+            'dataset':          cfg.dataset,
             'n_agents':         cfg.n_agents,
             'epochs':           cfg.epochs,
             'batch_size':       cfg.batch_size,
@@ -230,13 +237,23 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
     )
 
     # ── 2. Data ───────────────────────────────────────────────────────────
-    train_loader, val_loader, test_loader = get_cifar10_loaders(
-        batch_size   = cfg.batch_size,
-        subset_size  = cfg.subset_size,
-        seed         = cfg.seed,
-        num_workers  = 0,
-    )
-    probe_loader = get_probe_loader(n_samples=512, batch_size=512)
+    if cfg.dataset == 'mnist':
+        train_loader, val_loader, test_loader = get_mnist_loaders(
+            batch_size      = cfg.batch_size,
+            subset_size     = cfg.subset_size,
+            seed            = cfg.seed,
+            num_workers     = 0,
+            expand_channels = True,
+        )
+        probe_loader = get_mnist_probe(n_samples=512, batch_size=512)
+    else:
+        train_loader, val_loader, test_loader = get_cifar10_loaders(
+            batch_size  = cfg.batch_size,
+            subset_size = cfg.subset_size,
+            seed        = cfg.seed,
+            num_workers = 0,
+        )
+        probe_loader = get_cifar10_probe(n_samples=512, batch_size=512)
 
     # ── 3. Agents + trainer ───────────────────────────────────────────────
     train_cfg = TrainingConfig(
