@@ -221,7 +221,7 @@ class EnsembleTrainer(ABC):
         # Disabled automatically when not on CUDA (CPU/MPS runs unaffected).
         self._use_amp = agents[0].device != 'cpu'
         self._scalers = [
-            torch.cuda.amp.GradScaler(enabled=self._use_amp)
+            torch.amp.GradScaler('cuda', enabled=self._use_amp)
             for _ in agents
         ]
 
