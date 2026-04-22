@@ -494,7 +494,7 @@ def plot_agent_pca(
     )
 
     # Mean position marker
-    ax3d.plot3D([0], [0], [float(interp([[0, 0]]))], 'o',
+    ax3d.plot3D([0], [0], [float(interp([[0, 0]])[0])], 'o',
                 color='white', markersize=7,
                 markeredgecolor='black', markeredgewidth=1.2,
                 label='ensemble mean', zorder=5)
@@ -507,7 +507,7 @@ def plot_agent_pca(
         a_i, b_i = float(final_a[i]), float(final_b[i])
 
         # 3D dot on the surface
-        z_i = float(interp([[a_i, b_i]]))
+        z_i = float(interp([[a_i, b_i]])[0])
         ax3d.plot3D([a_i], [b_i], [z_i], 'o',
                     color=color, markersize=7,
                     markeredgecolor='black', markeredgewidth=0.8,

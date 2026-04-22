@@ -187,6 +187,40 @@ class AgentTrainer:
 
 
 # ---------------------------------------------------------------------------
+# Metrics helpers
+# ---------------------------------------------------------------------------
+
+def _macro_f1(pred_classes: torch.Tensor, targets: torch.Tensor, n_classes: int) -> float:
+    """
+    Compute macro-averaged F1 score from predicted class indices and targets.
+
+    Macro average: compute F1 per class, then average uniformly across classes.
+    This gives equal weight to each class regardless of frequency — appropriate
+    for balanced datasets like CIFAR-10 and robust for potential imbalanced ones.
+
+    Parameters
+    ----------
+    pred_classes : Tensor shape (N,) — predicted class indices (argmax of logits)
+    targets      : Tensor shape (N,) — ground-truth class indices
+    n_classes    : int — number of classes
+
+    Returns
+    -------
+    float in [0, 1]
+    """
+    f1_per_class = []
+    for c in range(n_classes):
+        tp = ((pred_classes == c) & (targets == c)).sum().float()
+        fp = ((pred_classes == c) & (targets != c)).sum().float()
+        fn = ((pred_classes != c) & (targets == c)).sum().float()
+        precision = tp / (tp + fp).clamp(min=1e-8)
+        recall    = tp / (tp + fn).clamp(min=1e-8)
+        denom     = (precision + recall).clamp(min=1e-8)
+        f1_per_class.append((2 * precision * recall / denom).item())
+    return sum(f1_per_class) / n_classes
+
+
+# ---------------------------------------------------------------------------
 # Abstract ensemble base
 # ---------------------------------------------------------------------------
 
@@ -265,10 +299,14 @@ class EnsembleTrainer(ABC):
         y = batch[1].to(device)
 
         # Stage 1: forward + backward for each agent
+        device_type = device.split(':')[0]  # 'cuda', 'mps', or 'cpu'
+        use_amp = device_type in ('cuda', 'mps')
+
         losses = []
         for agent in self.agents:
             agent.optimizer.zero_grad()
-            loss = self.criterion(agent.model(X), y)
+            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                loss = self.criterion(agent.model(X), y)
             loss.backward()
             losses.append(loss.item())
 
@@ -360,17 +398,24 @@ class EnsembleTrainer(ABC):
           - mean_acc          : mean accuracy across agents
           - best_acc          : best individual accuracy
           - ensemble_acc      : accuracy of the mean prediction across agents
+          - individual_f1s   : list[float], macro-averaged F1 per agent
+          - mean_f1           : mean F1 across agents
+          - ensemble_f1       : macro-averaged F1 of the ensemble prediction
           - diversity         : mean pairwise L2 distance in parameter space
         """
         all_preds: list[list[torch.Tensor]] = [[] for _ in self.agents]
         all_targets: list[torch.Tensor] = []
 
+        device_type = self.agents[0].device.split(':')[0]
+        use_amp = device_type in ('cuda', 'mps')
+
         for batch in dataloader:
             X, y = batch
             all_targets.append(y.cpu())
             for i, agent in enumerate(self.agents):
-                pred = agent.model(X.to(agent.device)).cpu()
-                all_preds[i].append(pred)
+                with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                    pred = agent.model(X.to(agent.device))
+                all_preds[i].append(pred.float().cpu())
 
         targets = torch.cat(all_targets)
         preds = [torch.cat(p) for p in all_preds]
@@ -384,6 +429,13 @@ class EnsembleTrainer(ABC):
             (p.argmax(dim=1) == targets).float().mean().item() for p in preds
         ]
         ensemble_acc = (ensemble_pred.argmax(dim=1) == targets).float().mean().item()
+
+        # Macro-averaged F1: average per-class F1 across all classes.
+        # On CIFAR-10 (balanced) this is nearly identical to accuracy, but
+        # included for completeness and to support potential imbalanced datasets.
+        n_classes = preds[0].shape[1]
+        individual_f1s = [_macro_f1(p.argmax(dim=1), targets, n_classes) for p in preds]
+        ensemble_f1    = _macro_f1(ensemble_pred.argmax(dim=1), targets, n_classes)
 
         # Mean pairwise L2 distance in parameter space
         param_vecs = torch.stack([a.param_vector() for a in self.agents])  # (N, D)
@@ -401,6 +453,9 @@ class EnsembleTrainer(ABC):
             "mean_acc":          sum(individual_accs) / len(individual_accs),
             "best_acc":          max(individual_accs),
             "ensemble_acc":      ensemble_acc,
+            "individual_f1s":    individual_f1s,
+            "mean_f1":           sum(individual_f1s) / len(individual_f1s),
+            "ensemble_f1":       ensemble_f1,
             "diversity":         diversity,
         }
 

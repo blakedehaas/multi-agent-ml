@@ -93,6 +93,7 @@ class AblationConfig:
     checkpoint_dir:   Path          = Path('experiments/checkpoints')
     wandb_project:    str           = 'swarm-optimization'
     wandb_mode:       str           = 'offline'
+    experiment_tag:   str           = ''
 
     # Dataset — 'cifar10' for final runs, 'mnist' for hyperparameter sweeps
     dataset: str = 'cifar10'
@@ -199,6 +200,7 @@ def run_ablation(cfg: AblationConfig) -> dict[str, dict]:
             checkpoint_dir   = cfg.checkpoint_dir,
             wandb_project    = cfg.wandb_project,
             wandb_mode       = cfg.wandb_mode,
+            wandb_group      = cfg.experiment_tag or None,
         )
 
         results = run_experiment(exp_cfg)
@@ -329,13 +331,14 @@ def compare_conditions(results: dict[str, dict]) -> None:
              final diversity, final gap CKA mean similarity.
     """
     print(f'\n{"Condition":<14} {"Ens Loss":>10} {"Ens Acc":>10} '
-          f'{"Best Acc":>10} {"Diversity":>10} {"GAP CKA":>10}')
-    print('─' * 68)
+          f'{"Ens F1":>8} {"Best Acc":>10} {"Diversity":>10} {"GAP CKA":>10}')
+    print('─' * 78)
 
     for label, res in results.items():
         tm       = res['test_metrics']
         ens_loss = tm['ensemble_loss']
         ens_acc  = tm['ensemble_acc']
+        ens_f1   = tm['ensemble_f1']
         best_acc = tm['best_acc']
         div      = tm['diversity']
 
@@ -348,5 +351,5 @@ def compare_conditions(results: dict[str, dict]) -> None:
 
         print(
             f'{label:<14} {ens_loss:>10.4f} {ens_acc:>10.3f} '
-            f'{best_acc:>10.3f} {div:>10.2f} {gap_cka:>10}'
+            f'{ens_f1:>8.3f} {best_acc:>10.3f} {div:>10.2f} {gap_cka:>10}'
         )

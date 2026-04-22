@@ -178,13 +178,9 @@ def extract_probe_activations(
     dict mapping layer name -> Tensor shape (N_probe, D_layer)
         Keys: 'block1', 'block2', 'block3', 'gap'
     """
-    # Unwrap torch.compile's OptimizedModule to access TinyNet directly.
-    # _orig_mod holds the original model when torch.compile has been applied.
-    raw_model = getattr(agent.model, '_orig_mod', agent.model)
-
-    if not isinstance(raw_model, TinyNet):
+    if not isinstance(agent.model, TinyNet):
         raise TypeError(
-            f"CKA extraction requires a TinyNet model, got {type(raw_model).__name__}. "
+            f"CKA extraction requires a TinyNet model, got {type(agent.model).__name__}. "
             f"Ensure agents are built with TinyNet."
         )
 
@@ -194,7 +190,7 @@ def extract_probe_activations(
 
     for X, _ in probe_loader:
         X = X.to(agent.device)
-        _, batch_probes = raw_model.forward_with_probes(X)
+        _, batch_probes = agent.model.forward_with_probes(X)
         for layer_name, acts in batch_probes.items():
             all_probes.setdefault(layer_name, []).append(acts.cpu())
 

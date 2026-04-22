@@ -26,6 +26,9 @@ data/*
 # IDE
 .idea/
 
+# Local outputs (fallback when Google Drive is not mounted)
+outputs/
+
 # Local tooling
 .claude/
 

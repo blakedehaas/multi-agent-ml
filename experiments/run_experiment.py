@@ -171,6 +171,7 @@ class ExperimentConfig:
     checkpoint_dir:    Path         = Path('experiments/checkpoints')
     wandb_project:     str          = 'swarm-optimization'
     wandb_mode:        str          = 'offline'
+    wandb_group:       Optional[str]= None
     run_name:          Optional[str]= None
 
     def __post_init__(self) -> None:
@@ -196,10 +197,6 @@ def build_agents(n: int, config: TrainingConfig, seed: int) -> list[AgentTrainer
     for i in range(n):
         torch.manual_seed(seed + i)
         model = TinyNet()
-        if config.device != 'cpu':
-            # fullgraph=False allows partial graph compilation, which is more
-            # permissive and avoids errors from dynamic control flow in tqdm.
-            model = torch.compile(model, fullgraph=False)
         agents.append(AgentTrainer(model, config))
     return agents
 
@@ -228,6 +225,7 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
     wandb.init(
         project = cfg.wandb_project,
         name    = cfg.run_name,
+        group   = cfg.wandb_group,
         mode    = cfg.wandb_mode,
         config  = {
             'dataset':          cfg.dataset,
@@ -319,14 +317,21 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
             mean_dist  = dist_mat[mask].mean().item()
             log_dict['diversity/mean_param_distance'] = mean_dist
 
-        # Validation loss + accuracy
+        # Validation loss + accuracy + F1
         val_metrics = trainer.evaluate(val_loader)
-        log_dict['val/mean_loss']     = val_metrics['mean_loss']
-        log_dict['val/best_loss']     = val_metrics['best_loss']
-        log_dict['val/ensemble_loss'] = val_metrics['ensemble_loss']
-        log_dict['val/mean_acc']      = val_metrics['mean_acc']
-        log_dict['val/best_acc']      = val_metrics['best_acc']
-        log_dict['val/ensemble_acc']  = val_metrics['ensemble_acc']
+        log_dict['val/mean_loss']          = val_metrics['mean_loss']
+        log_dict['val/best_loss']          = val_metrics['best_loss']
+        log_dict['val/ensemble_loss']      = val_metrics['ensemble_loss']
+        log_dict['val/mean_acc']           = val_metrics['mean_acc']
+        log_dict['val/best_acc']           = val_metrics['best_acc']
+        log_dict['val/ensemble_acc']       = val_metrics['ensemble_acc']
+        log_dict['val/ensemble_f1']        = val_metrics['ensemble_f1']
+        # Generalization gap: positive = overfitting, negative = underfitting.
+        # Useful as a sweep metric — minimizing this selects configs that
+        # generalize rather than just fitting training data.
+        log_dict['val/generalization_gap'] = (
+            val_metrics['ensemble_loss'] - metrics['mean_loss']
+        )
 
         # CKA checkpoint
         if epoch % cfg.cka_interval == 0:
@@ -380,6 +385,7 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
         'test/mean_acc':      test_metrics['mean_acc'],
         'test/best_acc':      test_metrics['best_acc'],
         'test/ensemble_acc':  test_metrics['ensemble_acc'],
+        'test/ensemble_f1':   test_metrics['ensemble_f1'],
         'test/diversity':     test_metrics['diversity'],
     })
     print(f'\nTest  ensemble={test_metrics["ensemble_loss"]:.4f}  '
