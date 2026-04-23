@@ -102,7 +102,7 @@ def create_sweep(
     project:     str   = 'swarm-optimization',
     method:      str   = 'bayes',
     n_trials:    int   = 30,
-    metric_name: str   = 'val/diversity_benefit',
+    metric_name: str   = 'val/diversity_weighted_acc',
     metric_goal: str   = 'maximize',
 ) -> str:
     """

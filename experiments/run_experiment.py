@@ -326,15 +326,18 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
         log_dict['val/best_acc']           = val_metrics['best_acc']
         log_dict['val/ensemble_acc']       = val_metrics['ensemble_acc']
         log_dict['val/ensemble_f1']        = val_metrics['ensemble_f1']
-        # Ensemble diversity benefit: how much better is the ensemble than
-        # individual agents on validation? Positive = ensemble helps.
-        # Maximizing this directly rewards diversity-driven improvement —
-        # collapsed agents produce ensemble_acc ~= mean_acc (near zero),
-        # while diverse agents with uncorrelated errors produce a large gap.
-        # This metric cannot be gamed by cohesion collapse the way
-        # val/ensemble_acc can.
+        # Diversity-weighted accuracy: ensemble_acc * (ensemble_acc - mean_acc).
+        # Rewards configurations that are both accurate AND benefit from diversity.
+        # Collapsing agents drives (ensemble_acc - mean_acc) toward zero, killing
+        # the product regardless of accuracy. Mediocre-but-diverse agents are
+        # penalized because low ensemble_acc shrinks the product from the other
+        # side. The sweet spot — high accuracy with genuine diversity benefit —
+        # produces the highest value.
         log_dict['val/diversity_benefit'] = (
             val_metrics['ensemble_acc'] - val_metrics['mean_acc']
+        )
+        log_dict['val/diversity_weighted_acc'] = (
+            val_metrics['ensemble_acc'] * (val_metrics['ensemble_acc'] - val_metrics['mean_acc'])
         )
 
         # CKA checkpoint
