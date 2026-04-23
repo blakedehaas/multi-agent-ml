@@ -21,9 +21,9 @@ from swarm.trainer import SwarmConfig
 # ---------------------------------------------------------------------------
 
 _FULL_SWARM_PARAMS = {
-    'alpha': {'min': 0.04, 'max': 0.24},
-    'beta':  {'min': 0.0, 'max': 0.15},
-    'gamma': {'min': 0.32, 'max': 0.52},
+    'alpha': {'min': 0.1, 'max': 0.9},
+    'beta':  {'min': 0.1, 'max': 0.9},
+    'gamma': {'min': 0.1, 'max': 0.9},
 }
 
 ENTITY_NAME  = "blakedehaas-auroral-precipitation-ml"
@@ -36,9 +36,9 @@ PROJECT_NAME = "multi-agent-ml"
 
 def create_sweep(
     method:      str = 'bayes',
-    n_trials:    int = 32,
-    metric_name: str = 'val/ensemble_acc',
-    metric_goal: str = 'maximize',
+    n_trials:    int = 64,
+    metric_name: str = 'val/generalization_gap',
+    metric_goal: str = 'minimize',
 ) -> str:
     """
     Register a Bayesian optimization sweep for full_swarm (alpha, beta, gamma).
