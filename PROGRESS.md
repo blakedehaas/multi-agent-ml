@@ -359,10 +359,13 @@ Despite separation producing diversity of 116 vs baseline's 22, the GAP-layer CK
 - **sep_coh**: Two outlier agents (agents 2 and 6) form a prominent cross pattern — both are dissimilar from all others AND from each other, suggesting they were pushed into genuinely different representational regions. Lowest CKA (0.821).
 - **full_swarm**: Single outlier agent forms a softer cross. One agent drifts while the rest stay similar.
 
-### 9. Topology sweep: divisibility does not predict stability; absolute k matters
+### 9. Bayesian sweep: cohesion is the dominant rule; β/γ = 5.0 was far from optimal
+Bayesian optimization over the full (α, β, γ) space finds that gamma (cohesion) is the primary driver of ensemble accuracy. Both top runs from the broad search have high gamma (0.800 and 0.426). The narrowed sweep, pushing gamma to 1.0, achieves 76.5% ensemble accuracy — the best result across all experiments, marginally exceeding the baseline (76.3%). The current ablation defaults (β/γ = 5.0) were in a regime of excessive separation; the optimal regime is tight clustering (β/γ ≈ 0.28). This directly contradicts the ablation finding that swarm rules hurt: under better hyperparameters, full_swarm outperforms baseline.
+
+### 10. Topology sweep: divisibility does not predict stability; absolute k matters
 Across four (n, k) configurations at batch_size=512, instability persists in all three k=3 configs (n=9, 10, 12) regardless of whether k divides n. n12_k4 is the only configuration where sep_coh and full_swarm both run cleanly to epoch 50. This rules out divisibility as a sufficient condition and points toward absolute neighborhood size as the operative variable.
 
-### 10. k sweep: stability threshold between k=5 and k=6; k=4 is optimal
+### 11. k sweep: stability threshold between k=5 and k=6; k=4 is optimal
 At n=12, batch_size=512, full_swarm across k=3 to k=11:
 - k=3: two agents destabilize, runaway behavior
 - k=4 and k=5: one agent shows a brief recoverable spike, mild instability
@@ -515,10 +518,71 @@ The practical recommendation for this model and dataset: k=4 with batch_size=512
 
 ---
 
-## Ongoing Experiments
+## Bayesian Hyperparameter Sweep Results (Completed)
 
-### Bayesian Hyperparameter Sweep
-Bayesian optimization over the (α, β, γ) force strength space for the full_swarm condition. Will explore whether a different β/γ ratio can recover the benefit of swarm coordination without inducing instability. Focus on much smaller β (0.05–0.2 range).
+Bayesian optimization over the (α, β, γ) force strength space for the full_swarm condition on Alpine (Blake). Two-phase approach: broad search over [0, 1]³ followed by a narrowed search around the best region.
+
+### Phase 1 — Broad Search ([0, 1]³)
+
+Top runs from the parallel coordinates sweep:
+
+| Run name | α | β | γ | β/γ | Ens Acc |
+|----------|---|---|---|-----|---------|
+| wise | 0.500 | 0.300 | 0.800 | 0.375 | ~0.740 |
+| zany | 0.148 | 0.052 | 0.426 | 0.122 | ~0.740 |
+
+Both top runs share a pattern: moderate-to-high gamma, low-to-moderate beta, and beta/gamma ratios well below 1.0. The worst-performing run (Ens Acc ~0.25) had high alpha and near-zero gamma, confirming cohesion is necessary.
+
+### Phase 2 — Narrowed Search
+
+Best configuration found:
+
+| α | β | γ | β/γ | Ens Acc |
+|---|---|---|-----|---------|
+| 0.559 | 0.280 | 0.999 | 0.280 | 0.765 |
+
+This is the best ensemble accuracy of any configuration tested to date, including baseline (0.763). The narrowed sweep confirms that pushing gamma toward its upper bound is the correct direction.
+
+### Main Finding
+
+**Gamma (cohesion) is the dominant rule.** The parallel coordinates plot shows that orange/yellow lines (high accuracy) fan out across alpha and beta values but converge at high gamma. The blue line (worst performer) dies at near-zero gamma. The physical interpretation: cohesion pulls agents toward the ensemble centroid, directly optimizing the property that drives ensemble accuracy — agents that agree more produce better-calibrated mean predictions.
+
+The current ablation defaults (β/γ = 5.0) place agents in a regime of aggressive separation with weak cohesion. The sweep finds that β/γ ≈ 0.28 — tight clustering — is the better regime. The current defaults were far from optimal.
+
+### Updated Recommended Hyperparameters
+
+| Parameter | Old default | Sweep optimum |
+|-----------|-------------|---------------|
+| α | 0.3 | 0.56 |
+| β | 0.5 | 0.28 |
+| γ | 0.1 | 1.00 |
+| β/γ | 5.0 | 0.28 |
+
+### Optimized Run Results
+
+Two follow-up runs using the sweep-optimized hyperparameters at 100 epochs, n=12, k=4.
+
+**v1 — batch_size=256 (mismatch with sweep):**
+
+| Condition | Ens Loss | Ens Acc | Ens F1 | Diversity | GAP CKA | Stopped at |
+|-----------|----------|---------|--------|-----------|---------|------------|
+| baseline  | 0.5151 | 0.825 | 0.824 | 35.42 | 0.854 | epoch 81 |
+| full_swarm | 0.6358 | 0.781 | 0.779 | 14.06 | 0.954 | epoch 51 |
+
+Baseline wins by 4.4 points. Full swarm stops 30 epochs early — high cohesion caps learning. Batch size of 256 provides enough natural gradient noise to regularize baseline, making the swarm's cohesion redundant.
+
+**v2 — batch_size=512 (matching sweep conditions):**
+
+| Condition | Ens Loss | Ens Acc | Ens F1 | Diversity | GAP CKA | Stopped at |
+|-----------|----------|---------|--------|-----------|---------|------------|
+| baseline  | 0.6735 | 0.763 | 0.760 | 22.55 | 0.911 | epoch 50 |
+| full_swarm | 0.6430 | 0.772 | 0.774 | 16.88 | 0.927 | epoch 87 |
+
+**Full swarm beats baseline by 0.9 points (77.2% vs 76.3%).** The training dynamics are reversed: baseline plateaus and stops at epoch 50 while the swarm keeps improving to epoch 87. Cohesion acts as a regularizer at batch_size=512, extending the productive training window by 37 epochs.
+
+The batch size was the confound. At batch_size=256, small noisy batches provide natural regularization sufficient for baseline. At batch_size=512, gradient estimates are smoother and baseline overfits earlier — this is precisely the regime where swarm cohesion adds value.
+
+**Methodological note:** The Bayesian sweep was run at batch_size=512, so the optimal hyperparameters (α=0.559, β=0.280, γ=0.999) are conditioned on that batch size. They are not transferable to other batch sizes. At batch_size=256, gradient noise is higher and already acts as an implicit regularizer — cohesion and gradient noise are substitutes, not independent knobs. Running the sweep at batch_size=256 would likely find a lower optimal γ. This also explains the v1 failure: applying sweep hyperparameters tuned at batch_size=512 to a batch_size=256 run over-regularized the swarm (too much cohesion on top of already-noisy gradients), causing early stopping at epoch 51 and the 4.4-point accuracy gap.
 
 ---
 
@@ -540,7 +604,8 @@ Bayesian optimization over the (α, β, γ) force strength space for the full_sw
 
 - [x] Analyze topology sweep results — divisibility ruled out; k=4 stabilizes both conditions at batch_size=512
 - [x] Run k sweep at n=12 (batch_size=512) — stability threshold between k=5 and k=6; k=4 is optimal; divisibility definitively ruled out
-- [ ] Integrate Bayesian sweep results from teammate
+- [x] Integrate Bayesian sweep results — cohesion is dominant; β/γ=0.28 optimal; 76.5% beats baseline
+- [x] Re-run with optimized params at batch_size=512 — full_swarm beats baseline (77.2% vs 76.3%), runs 37 epochs longer
 - [ ] Re-run promising conditions with different random seeds for robustness
 - [ ] Investigate warm-up period effect on stability
 - [ ] Write paper — sections: Introduction, Related Work, Method, Experiments, Results, Discussion

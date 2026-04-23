@@ -40,8 +40,9 @@ Sweep methods
 Search spaces
 -------------
 Each condition has a pre-defined search space that only includes its
-active parameters. For example, 'separation' only sweeps β and lr —
-sweeping α and γ when they're 0 would be wasteful.
+active swarm rule parameters. For example, 'separation' only sweeps β —
+sweeping α and γ when they're 0 would be wasteful. lr and k are fixed
+constants (1e-3 and 4 respectively) and are not part of the search space.
 """
 
 from pathlib import Path
@@ -57,56 +58,37 @@ from swarm.trainer import SwarmConfig
 # Search space definitions (one per ablation condition)
 # ---------------------------------------------------------------------------
 
-# Common parameters swept in every condition
-_COMMON_PARAMS = {
-    'lr': {
-        'distribution': 'log_uniform_values',
-        'min': 1e-4,
-        'max': 1e-2,
-    },
-    'k': {
-        'values': [2, 3, 5, 9],   # 9 = full connectivity for N=10
-    },
-}
-
-# Per-condition search spaces — only active rule parameters are swept
+# Per-condition search spaces — only the active swarm rule parameters are swept.
+# lr is fixed at 1e-3 (not swept): the previous sweep showed it is not a
+# significant confound and sweeping it wastes trials on a known-good value.
+# k is fixed at 4 — topology and k sweeps established this as optimal.
 _CONDITION_PARAMS: dict[str, dict] = {
-    'baseline': {
-        # No swarm params to sweep — only optimizer settings
-        **_COMMON_PARAMS,
-    },
+    'baseline': {},   # no swarm params to tune
     'alignment': {
         'alpha': {'min': 0.05, 'max': 0.8},
-        **_COMMON_PARAMS,
     },
     'separation': {
         'beta': {'min': 0.05, 'max': 2.0},
-        **_COMMON_PARAMS,
     },
     'cohesion': {
         'gamma': {'min': 0.01, 'max': 0.5},
-        **_COMMON_PARAMS,
     },
     'align_sep': {
         'alpha': {'min': 0.05, 'max': 0.8},
         'beta':  {'min': 0.05, 'max': 2.0},
-        **_COMMON_PARAMS,
     },
     'align_coh': {
         'alpha': {'min': 0.05, 'max': 0.8},
         'gamma': {'min': 0.01, 'max': 0.5},
-        **_COMMON_PARAMS,
     },
     'sep_coh': {
         'beta':  {'min': 0.05, 'max': 2.0},
         'gamma': {'min': 0.01, 'max': 0.5},
-        **_COMMON_PARAMS,
     },
     'full_swarm': {
         'alpha': {'min': 0.05, 'max': 0.8},
-        'beta':  {'min': 0.05, 'max': 2.0},
-        'gamma': {'min': 0.01, 'max': 0.5},
-        **_COMMON_PARAMS,
+        'beta':  {'min': 0.05, 'max': 1.0},
+        'gamma': {'min': 0.01, 'max': 1.0},
     },
 }
 
@@ -120,7 +102,7 @@ def create_sweep(
     project:     str   = 'swarm-optimization',
     method:      str   = 'bayes',
     n_trials:    int   = 30,
-    metric_name: str   = 'val/ensemble_loss',
+    metric_name: str   = 'val/generalization_gap',
     metric_goal: str   = 'minimize',
 ) -> str:
     """
@@ -181,7 +163,7 @@ def run_sweep_agent(
     sweep_id:    str,
     condition:   str,
     project:     str          = 'swarm-optimization',
-    n_agents:    int          = 10,
+    n_agents:    int          = 12,
     epochs:      int          = 30,
     subset_size: Optional[int]= None,
     device:      str          = 'cuda',
@@ -219,7 +201,8 @@ def run_sweep_agent(
         'cuda' for Colab A100, 'cpu' for local testing.
     seed : int
         Fixed seed — keeps agent initialization identical across trials
-        so differences come only from hyperparameter choices.
+        so differences come only from swarm rule strengths (alpha/beta/gamma).
+        lr is fixed at 1e-3; k is fixed at 4.
     cka_interval : int
     checkpoint_dir : Path
     count : int or None
@@ -242,11 +225,11 @@ def run_sweep_agent(
                 run_name         = f'{condition}_{run.id}',
                 n_agents         = n_agents,
                 epochs           = epochs,
-                batch_size       = 128,
+                batch_size       = 512,
                 subset_size      = subset_size,
                 device           = device,
                 seed             = seed,
-                lr               = float(wc.get('lr', 1e-3)),
+                lr               = 1e-3,   # fixed — not swept
                 cka_interval     = cka_interval,
                 landscape_at_end = False,   # too expensive during sweep
                 checkpoint_dir   = checkpoint_dir,
@@ -273,7 +256,8 @@ def _config_from_wandb(condition: str, wc) -> SwarmConfig:
     alpha = float(wc.get('alpha', 0.0))
     beta  = float(wc.get('beta',  0.0))
     gamma = float(wc.get('gamma', 0.0))
-    k     = int(wc.get('k', 3))
+    # k fixed at 4 — established as optimal by topology and k sweeps.
+    k     = 4
 
     return SwarmConfig(alpha=alpha, beta=beta, gamma=gamma, k=k)
 
