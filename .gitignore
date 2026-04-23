@@ -1,0 +1,32 @@
+# W&B offline run logs
+wandb/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# Data / checkpoints (large files)
+# Ignore data directory contents but keep source modules
+data/*
+!data/*.py
+!data/__init__.py
+*.pt
+*.pth
+*.ckpt
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+
+# Local tooling
+.claude/
+
+WORKFLOW_PERSONAL.md
