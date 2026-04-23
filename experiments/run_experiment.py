@@ -326,11 +326,15 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
         log_dict['val/best_acc']           = val_metrics['best_acc']
         log_dict['val/ensemble_acc']       = val_metrics['ensemble_acc']
         log_dict['val/ensemble_f1']        = val_metrics['ensemble_f1']
-        # Generalization gap: positive = overfitting, negative = underfitting.
-        # Useful as a sweep metric — minimizing this selects configs that
-        # generalize rather than just fitting training data.
-        log_dict['val/generalization_gap'] = (
-            val_metrics['ensemble_loss'] - metrics['mean_loss']
+        # Ensemble diversity benefit: how much better is the ensemble than
+        # individual agents on validation? Positive = ensemble helps.
+        # Maximizing this directly rewards diversity-driven improvement —
+        # collapsed agents produce ensemble_acc ~= mean_acc (near zero),
+        # while diverse agents with uncorrelated errors produce a large gap.
+        # This metric cannot be gamed by cohesion collapse the way
+        # val/ensemble_acc can.
+        log_dict['val/diversity_benefit'] = (
+            val_metrics['ensemble_acc'] - val_metrics['mean_acc']
         )
 
         # CKA checkpoint

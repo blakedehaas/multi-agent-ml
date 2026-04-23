@@ -102,8 +102,8 @@ def create_sweep(
     project:     str   = 'swarm-optimization',
     method:      str   = 'bayes',
     n_trials:    int   = 30,
-    metric_name: str   = 'val/generalization_gap',
-    metric_goal: str   = 'minimize',
+    metric_name: str   = 'val/diversity_benefit',
+    metric_goal: str   = 'maximize',
 ) -> str:
     """
     Register a new sweep with W&B and return its sweep_id.
